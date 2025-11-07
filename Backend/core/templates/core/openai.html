@@ -1,0 +1,28 @@
+<h1> OpenAi</h1>
+<form action="{% url 'openai' %}" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <input type="file" name="meal_image" id ="image" accept="image/*">
+    <input type="submit" value="Enter">
+</form>
+
+{% if result %}
+<div>
+    <h4> Result:</h4>
+    {% if result.name %}
+        <p><strong>Dish:</strong> {{ result.name }}</p>
+        <p><strong>Confidence:</strong> {{ result.confidence }}</p>
+        <p><strong>Components / Ingredients (estimated carbs):</strong></p>
+        <ul>
+        {% for comp in result.components %}
+            <li>{{ comp.name }} — {{ comp.carbs_g }} g carbs</li>
+        {% endfor %}
+        </ul>
+        <p><strong>Total carbs (g):</strong> {{ result.total_carbs_g }}</p>
+        {% if result.calories_estimate %}
+        <p><strong>Calories (estimate):</strong> {{ result.calories_estimate }}</p>
+        {% endif %}
+    {% else %}
+        <pre>{{ result }}</pre>
+    {% endif %}
+</div>
+{% endif %}

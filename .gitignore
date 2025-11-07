@@ -1,0 +1,11 @@
+# Environment files
+Backend/.env
+glugo/.env
+
+# Flutter/Dart temporary files
+.dart_tool/
+.flutter-plugins-dependencies/
+
+# OS or editor-specific files
+*.log
+*.DS_Store
