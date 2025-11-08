@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../utils/theme.dart';
 import '../services/api_service.dart';
 import 'sign_up.dart';
+import 'forgot_pass_screen.dart'; // Add this import
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -17,21 +18,21 @@ class _AuthScreenState extends State<AuthScreen>
   bool _isLoading = false;
   bool _rememberMe = false;
   final _formKey = GlobalKey<FormState>();
-  final _usernameController = TextEditingController(); // Changed from email to username
+  final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _apiService = ApiService(); // Add API service
+  final _apiService = ApiService();
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
 
   // Focus nodes for better UX
-  final FocusNode _usernameFocusNode = FocusNode(); // Changed from email
+  final FocusNode _usernameFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
-    _checkLoginStatus(); // Check if user is already logged in
+    _checkLoginStatus();
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 1000),
       vsync: this,
@@ -66,7 +67,6 @@ class _AuthScreenState extends State<AuthScreen>
     super.dispose();
   }
 
-  // Updated validation for username
   String? _validateUsername(String? value) {
     if (value == null || value.isEmpty) {
       return 'Please enter your username';
@@ -435,20 +435,21 @@ class _AuthScreenState extends State<AuthScreen>
 
   void _forgotPassword() {
     HapticFeedback.selectionClick();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Reset Password'),
-        content: const Text(
-          'Password reset functionality will be available in the next update. Please contact support if you need immediate assistance.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
-          ),
-        ],
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const ForgotPasswordPage(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return SlideTransition(
+            position: animation.drive(
+              Tween(begin: const Offset(1.0, 0.0), end: Offset.zero)
+                  .chain(CurveTween(curve: Curves.easeInOut)),
+            ),
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 300),
       ),
     );
   }

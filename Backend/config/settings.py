@@ -10,25 +10,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 # OpenAI key (loaded from environment)
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # Default model names 
-OPENAI_VISION_MODEL = os.getenv('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision')
-OPENAI_TEXT_MODEL = os.getenv('OPENAI_TEXT_MODEL', 'gpt-4o-mini')
+OPENAI_VISION_MODEL = os.environ.get('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision')
+OPENAI_TEXT_MODEL = os.environ.get('OPENAI_TEXT_MODEL', 'gpt-4o-mini')
 # Generic model name for image->json tasks (production entrypoint)
-OPENAI_MODEL = os.getenv('OPENAI_MODEL', os.getenv('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision'))
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', os.getenv('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision'))
 # Timeout (seconds) for upstream OpenAI calls
-OPENAI_TIMEOUT = int(os.getenv('OPENAI_TIMEOUT', '20'))
+OPENAI_TIMEOUT = int(os.environ.get('OPENAI_TIMEOUT', '20'))
 
 # Optional: single static LibreView account mode. When enabled the server will
 # use the static email/password below for any Libre password-login flows.
-LIBRE_STATIC_ENABLED = os.getenv('LIBRE_STATIC_ENABLED', '0') in ('1', 'true', 'True')
-LIBRE_STATIC_EMAIL = os.getenv('LIBRE_STATIC_EMAIL')
-LIBRE_STATIC_PASSWORD = os.getenv('LIBRE_STATIC_PASSWORD')
+LIBRE_STATIC_ENABLED = os.environ.get('LIBRE_STATIC_ENABLED', '0') in ('1', 'true', 'True')
+LIBRE_STATIC_EMAIL = os.environ.get('LIBRE_STATIC_EMAIL')
+LIBRE_STATIC_PASSWORD = os.environ.get('LIBRE_STATIC_PASSWORD')
 
 #celery settings
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/1')
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/1')
 
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'

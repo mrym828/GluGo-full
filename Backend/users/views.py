@@ -4,6 +4,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from .serializer import UserRegistrationSerializer, UserSerializer
 from rest_framework.views import APIView
+from rest_framework.decorators import api_view, permission_classes
 
 
 User = get_user_model()
@@ -70,7 +71,6 @@ class DeleteAccountView(APIView):
             
             # Delete the user account
             # This will cascade delete all related objects (glucose records, food entries, etc.)
-            # due to the ForeignKey relationships with on_delete=models.CASCADE
             user.delete()
             
             return Response({
@@ -84,3 +84,20 @@ class DeleteAccountView(APIView):
                 'detail': str(e),
                 'success': False
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def reset_password(request):
+    username = request.data.get('username')
+    new_password = request.data.get('new_password')
+
+    if not username or not new_password:
+        return Response({'error': 'Missing fields'}, status=400)
+
+    try:
+        user = User.objects.get(username=username)
+        user.set_password(new_password)
+        user.save()
+        return Response({'message': 'Password updated successfully!'})
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=404)

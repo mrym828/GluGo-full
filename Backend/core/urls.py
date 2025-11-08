@@ -8,6 +8,7 @@ from core.services.api import (
     LibreOAuthStartView, LibreOAuthCallbackView, LibrePasswordLoginView,
     OpenAIAnalyzeImageView, csrf_token_view, LibreSyncNowView, GlucoseStatisticsView
 )
+from core.views import FoodEntryListCreateView, FoodEntryDetailView
 
 router = routers.DefaultRouter()
 router.register(r'food-entries', FoodEntryViewSet)
@@ -30,5 +31,7 @@ urlpatterns = [
     path('csrf/' ,csrf_token_view, name='csrf_token'),
     path("libre/sync-now/", LibreSyncNowView.as_view(), name="libre_sync_now"),
     path('glucose-statistics/', GlucoseStatisticsView.as_view(), name='glucose-statistics'),
+    path('food/entries/', FoodEntryListCreateView.as_view(), name='food-entry-list-create'),
+    path('food/entries/<uuid:pk>/', FoodEntryDetailView.as_view(), name='food-entry-detail'),
 
 ]

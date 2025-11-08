@@ -19,7 +19,7 @@ class FoodEntrySerializer(serializers.ModelSerializer):
         model = FoodEntry
         fields = (
             'id', 'user', 'food_name', 'description', 'timestamp', 'meal_type',
-            'image', 'nutritional_info', 'insulin_recommended', 'insulin_rounded'
+            'image', 'nutritional_info', 'insulin_recommended', 'insulin_rounded','total_carbs_g'
         )
         read_only_fields = ('insulin_recommended', 'insulin_rounded', 'user')
     
