@@ -26,10 +26,8 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
   final List<String> _timeRanges = ['24h', '7d', '30d', '90d'];
   final List<String> _tabTitles = ['Overview', 'Trends', 'Statistics'];
 
-  // API Service
   final ApiService _apiService = ApiService();
   
-  // Data state
   List<GlucoseReading> _glucoseReadings = [];
   bool _isLoading = false;
   String? _errorMessage;
@@ -65,7 +63,6 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
     ));
   }
 
-  // Load glucose data from API with time range filtering
   Future<void> _loadGlucoseData() async {
     setState(() {
       _isLoading = true;
@@ -75,7 +72,6 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
     try {
       await _apiService.init();
       
-      // Check if user is logged in
       if (!_apiService.isLoggedIn) {
         if (mounted) {
           Navigator.pushReplacementNamed(context, '/login');
@@ -83,46 +79,59 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
         return;
       }
 
-      // Calculate date range based on selection
       final now = DateTime.now();
       DateTime startDate;
+      int limitRecords;
       
       switch (_selectedTimeRange) {
         case '7d':
           startDate = now.subtract(const Duration(days: 7));
+          limitRecords = 500;
           break;
         case '30d':
           startDate = now.subtract(const Duration(days: 30));
+          limitRecords = 1000;
           break;
         case '90d':
           startDate = now.subtract(const Duration(days: 90));
+          limitRecords = 2000;
           break;
         case '24h':
         default:
-          startDate = now.subtract(const Duration(days: 1));
+          startDate = now.subtract(const Duration(hours: 24));
+          limitRecords = 100;
           break;
       }
+
+      print('Loading glucose data for range: $_selectedTimeRange');
+      print('Start date: $startDate, End date: $now');
 
       // Fetch glucose records with date filtering
       final data = await _apiService.getGlucoseRecords(
         startDate: startDate,
         endDate: now,
-        limit: 100,
+        limit: limitRecords,
       );
       
       if (mounted) {
         setState(() {
           _glucoseReadings = (data as List)
               .map((json) => GlucoseReading.fromJson(json))
-              .where((reading) => reading.value > 0) // Filter invalid readings
+              .where((reading) => 
+                  reading.value > 0 && 
+                  reading.timestamp.isAfter(startDate) &&
+                  reading.timestamp.isBefore(now)
+              )
               .toList();
           _glucoseReadings.sort((a, b) => b.timestamp.compareTo(a.timestamp));
           _isLoading = false;
         });
+        
+        print('Loaded ${_glucoseReadings.length} readings for $_selectedTimeRange');
       }
       
       if (_glucoseReadings.isEmpty && mounted) {
-        _showSnackBar('No glucose readings found in selected time range.', 
+        _showSnackBar('No glucose readings found for $_selectedTimeRange.', 
             isSuccess: false);
       }
     } catch (e) {
@@ -135,22 +144,18 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
         _showSnackBar('Error loading glucose data', isSuccess: false);
       }
       
-      // Fallback to sample data for UI testing
       _generateSampleData();
     }
   }
 
-  // Sync data from Libre
+
   Future<void> _syncLibreData() async {
     try {
       _showSnackBar('Syncing glucose data from Libre...', isSuccess: true);
       
       await _apiService.libreSyncNow();
       
-      // Wait a moment for sync to process
       await Future.delayed(const Duration(seconds: 2));
-      
-      // Reload data
       await _loadGlucoseData();
       
       _showSnackBar('Sync completed successfully!', isSuccess: true);
@@ -161,33 +166,43 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
 
   void _generateSampleData() {
     final now = DateTime.now();
-    _glucoseReadings = [
-      GlucoseReading(
-        id: '1',
-        timestamp: now.subtract(const Duration(minutes: 15)),
-        value: 112,
-      ),
-      GlucoseReading(
-        id: '2',
-        timestamp: now.subtract(const Duration(hours: 1)),
-        value: 126,
-      ),
-      GlucoseReading(
-        id: '3',
-        timestamp: now.subtract(const Duration(hours: 2)),
-        value: 98,
-      ),
-      GlucoseReading(
-        id: '4',
-        timestamp: now.subtract(const Duration(hours: 3)),
-        value: 145,
-      ),
-      GlucoseReading(
-        id: '5',
-        timestamp: now.subtract(const Duration(hours: 4)),
-        value: 189,
-      ),
-    ];
+    int dataPoints;
+    Duration interval;
+    
+    switch (_selectedTimeRange) {
+      case '7d':
+        dataPoints = 35; 
+        interval = const Duration(hours: 5);
+        break;
+      case '30d':
+        dataPoints = 60;
+        interval = const Duration(hours: 12);
+        break;
+      case '90d':
+        dataPoints = 90; 
+        interval = const Duration(days: 1);
+        break;
+      case '24h':
+      default:
+        dataPoints = 15; 
+        interval = const Duration(minutes: 90);
+        break;
+    }
+    
+    _glucoseReadings = List.generate(dataPoints, (index) {
+      final baseValue = 110.0;
+      final variation = 40 * (0.5 - (index % 5) / 10.0);
+      final randomFactor = (index % 3) * 15.0;
+      final value = (baseValue + variation + randomFactor).clamp(65.0, 200.0);
+      
+      return GlucoseReading(
+        id: '${index + 1}',
+        timestamp: now.subtract(interval * index),
+        value: value,
+      );
+    }).reversed.toList(); // Reverse to have oldest first
+    
+    print('Generated ${_glucoseReadings.length} sample readings for $_selectedTimeRange');
   }
 
   @override
@@ -258,6 +273,8 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
   }
 
   void _onTimeRangeChanged(String range) {
+    if (_selectedTimeRange == range) return; 
+    
     setState(() => _selectedTimeRange = range);
     HapticFeedback.selectionClick();
     _loadGlucoseData(); // Reload with new time range filter
@@ -370,7 +387,6 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
   PreferredSizeWidget _buildAppBar() {
     return SharedAppBar(
       title: 'Glucose Overview',
-      showBackButton: true,
       showConnection: true,
       actions: [
         IconButton(
@@ -401,13 +417,25 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
 
     switch (_selectedTabIndex) {
       case 0:
-        return _OverviewTab(glucoseReadings: _glucoseReadings);
+        return _OverviewTab(
+          glucoseReadings: _glucoseReadings,
+          timeRange: _selectedTimeRange,
+        );
       case 1:
-        return _TrendsTab(glucoseReadings: _glucoseReadings);
+        return _TrendsTab(
+          glucoseReadings: _glucoseReadings,
+          timeRange: _selectedTimeRange,
+        );
       case 2:
-        return _StatisticsTab(glucoseReadings: _glucoseReadings);
+        return _StatisticsTab(
+          glucoseReadings: _glucoseReadings,
+          timeRange: _selectedTimeRange,
+        );
       default:
-        return _OverviewTab(glucoseReadings: _glucoseReadings);
+        return _OverviewTab(
+          glucoseReadings: _glucoseReadings,
+          timeRange: _selectedTimeRange,
+        );
     }
   }
 
@@ -432,7 +460,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
             ),
             const SizedBox(height: AppTheme.spacingM),
             Text(
-              'Start logging your glucose readings or sync with your device',
+              'No readings found for $_selectedTimeRange\nTry a different time range or sync your device',
               textAlign: TextAlign.center,
               style: AppTheme.bodyMedium.copyWith(
                 color: AppTheme.textSecondary,
@@ -575,22 +603,26 @@ class _TabSelector extends StatelessWidget {
 // Overview Tab Widget
 class _OverviewTab extends StatelessWidget {
   final List<GlucoseReading> glucoseReadings;
+  final String timeRange;
 
-  const _OverviewTab({required this.glucoseReadings});
+  const _OverviewTab({
+    required this.glucoseReadings,
+    required this.timeRange,
+  });
 
   @override
   Widget build(BuildContext context) {
     final hasReadings = glucoseReadings.isNotEmpty;
     
     return SingleChildScrollView(
-      key: const ValueKey('overview'),
+      key: ValueKey('overview_$timeRange'),
       padding: const EdgeInsets.all(AppTheme.spacingL),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (hasReadings) _CurrentGlucoseCard(reading: glucoseReadings.first),
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
-          if (hasReadings) _GlucoseChart(readings: glucoseReadings),
+          if (hasReadings) _GlucoseChart(readings: glucoseReadings, timeRange: timeRange),
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
           if (hasReadings) _QuickStats(readings: glucoseReadings),
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
@@ -703,8 +735,12 @@ class _CurrentGlucoseCard extends StatelessWidget {
 // Glucose Chart Widget
 class _GlucoseChart extends StatelessWidget {
   final List<GlucoseReading> readings;
+  final String timeRange;
 
-  const _GlucoseChart({required this.readings});
+  const _GlucoseChart({
+    required this.readings,
+    required this.timeRange,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -718,7 +754,7 @@ class _GlucoseChart extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Glucose Trend',
+                'Glucose Trend ($timeRange)',
                 style: AppTheme.titleMedium.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
@@ -761,22 +797,18 @@ class _GlucoseChart extends StatelessWidget {
                     sideTitles: SideTitles(
                       showTitles: true,
                       reservedSize: 25,
-                      interval: 2,
+                      interval: _getChartInterval(),
                       getTitlesWidget: (value, meta) {
-                        final hours = _generateHourLabels(readings.length);
-                        final index = value.toInt();
-                        if (index >= 0 && index < hours.length) {
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 6),
-                            child: Text(
-                              hours[index],
-                              style: AppTheme.bodySmall.copyWith(
-                                color: AppTheme.textTertiary,
-                              ),
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            _getChartLabel(value.toInt()),
+                            style: AppTheme.bodySmall.copyWith(
+                              color: AppTheme.textTertiary,
+                              fontSize: 10,
                             ),
-                          );
-                        }
-                        return const SizedBox.shrink();
+                          ),
+                        );
                       },
                     ),
                   ),
@@ -815,7 +847,7 @@ class _GlucoseChart extends StatelessWidget {
                     barWidth: 2.5,
                     isStrokeCapRound: true,
                     dotData: FlDotData(
-                      show: true,
+                      show: readings.length <= 20,
                       getDotPainter: (spot, percent, barData, index) {
                         final glucoseValue = spot.y;
                         final color = AppTheme.getGlucoseColor(glucoseValue);
@@ -854,18 +886,35 @@ class _GlucoseChart extends StatelessWidget {
     );
   }
 
+  double _getChartInterval() {
+    final count = readings.length;
+    if (count <= 10) return 2;
+    if (count <= 30) return 5;
+    if (count <= 60) return 10;
+    return 15;
+  }
+
+  String _getChartLabel(int index) {
+    if (index < 0 || index >= readings.length) return '';
+    
+    final reading = readings[index];
+    final now = DateTime.now();
+    final diff = now.difference(reading.timestamp);
+    
+    if (timeRange == '24h') {
+      return '${diff.inHours}h';
+    } else if (timeRange == '7d') {
+      return '${diff.inDays}d';
+    } else {
+      return '${diff.inDays}d';
+    }
+  }
+
   int _calculateTimeInRange() {
     if (readings.isEmpty) return 0;
     final inRange = readings.where((reading) => 
         reading.value >= 70 && reading.value <= 180).length;
     return ((inRange / readings.length) * 100).round();
-  }
-
-  List<String> _generateHourLabels(int readingCount) {
-    if (readingCount <= 5) {
-      return List.generate(readingCount, (index) => '${index + 1}');
-    }
-    return ['Start', '', 'Mid', '', 'Now'];
   }
 }
 
@@ -1059,17 +1108,21 @@ class _ReadingItem extends StatelessWidget {
 // Trends Tab Widget
 class _TrendsTab extends StatelessWidget {
   final List<GlucoseReading> glucoseReadings;
+  final String timeRange;
 
-  const _TrendsTab({required this.glucoseReadings});
+  const _TrendsTab({
+    required this.glucoseReadings,
+    required this.timeRange,
+  });
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-      key: const ValueKey('trends'),
+      key: ValueKey('trends_$timeRange'),
       padding: const EdgeInsets.all(AppTheme.spacingL),
       child: Column(
         children: [
-          _DetailedChart(readings: glucoseReadings),
+          _DetailedChart(readings: glucoseReadings, timeRange: timeRange),
           const SizedBox(height: AppTheme.spacingXL),
           _TrendAnalysis(),
           const SizedBox(height: AppTheme.spacingXL),
@@ -1084,8 +1137,12 @@ class _TrendsTab extends StatelessWidget {
 // Detailed Chart Widget
 class _DetailedChart extends StatelessWidget {
   final List<GlucoseReading> readings;
+  final String timeRange;
 
-  const _DetailedChart({required this.readings});
+  const _DetailedChart({
+    required this.readings,
+    required this.timeRange,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1097,7 +1154,7 @@ class _DetailedChart extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Detailed Trends',
+                'Detailed Trends ($timeRange)',
                 style: AppTheme.titleMedium.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
@@ -1121,7 +1178,7 @@ class _DetailedChart extends StatelessWidget {
                 gridData: FlGridData(
                   show: true,
                   drawVerticalLine: true,
-                  verticalInterval: 4,
+                  verticalInterval: readings.length > 20 ? 5 : 2,
                   horizontalInterval: 50,
                   getDrawingHorizontalLine: (value) {
                     if (value == 70 || value == 180) {
@@ -1148,17 +1205,17 @@ class _DetailedChart extends StatelessWidget {
                     sideTitles: SideTitles(
                       showTitles: true,
                       reservedSize: 25,
-                      interval: 4,
+                      interval: _getDetailedInterval(),
                       getTitlesWidget: (value, meta) {
-                        final hours = _generateDetailedHourLabels();
                         final index = value.toInt();
-                        if (index >= 0 && index < hours.length && index % 4 == 0) {
+                        if (index >= 0 && index < readings.length) {
                           return Padding(
                             padding: const EdgeInsets.only(top: 6),
                             child: Text(
-                              hours[index],
+                              _getDetailedLabel(index),
                               style: AppTheme.bodySmall.copyWith(
                                 color: AppTheme.textTertiary,
+                                fontSize: 9,
                               ),
                             ),
                           );
@@ -1197,7 +1254,7 @@ class _DetailedChart extends StatelessWidget {
                   ),
                 ),
                 minX: 0,
-                maxX: 23,
+                maxX: (readings.length - 1).toDouble(),
                 minY: 50,
                 maxY: 300,
                 lineBarsData: [
@@ -1208,7 +1265,7 @@ class _DetailedChart extends StatelessWidget {
                     barWidth: 2,
                     isStrokeCapRound: true,
                     dotData: FlDotData(
-                      show: true,
+                      show: readings.length <= 30,
                       getDotPainter: (spot, percent, barData, index) {
                         final glucoseValue = spot.y;
                         final color = AppTheme.getGlucoseColor(glucoseValue);
@@ -1221,7 +1278,12 @@ class _DetailedChart extends StatelessWidget {
                       },
                     ),
                     belowBarData: BarAreaData(show: false),
-                    spots: _generateDetailedChartData(),
+                    spots: readings.asMap().entries.map((entry) {
+                      return FlSpot(
+                        entry.key.toDouble(),
+                        entry.value.value,
+                      );
+                    }).toList(),
                   ),
                 ],
               ),
@@ -1232,21 +1294,28 @@ class _DetailedChart extends StatelessWidget {
     );
   }
 
-  List<String> _generateDetailedHourLabels() {
-    final labels = <String>[];
-    for (int i = 0; i < 24; i++) {
-      labels.add('${i.toString().padLeft(2, '0')}:00');
-    }
-    return labels;
+  double _getDetailedInterval() {
+    final count = readings.length;
+    if (count <= 15) return 3;
+    if (count <= 40) return 8;
+    if (count <= 70) return 15;
+    return 20;
   }
 
-  List<FlSpot> _generateDetailedChartData() {
-    final spots = <FlSpot>[];
-    for (int i = 0; i < 24; i++) {
-      final value = 100 + (50 * (0.5 - (i - 12).abs() / 24)) + (20 * (i % 3 - 1));
-      spots.add(FlSpot(i.toDouble(), value.clamp(60, 250)));
+  String _getDetailedLabel(int index) {
+    if (index >= readings.length) return '';
+    
+    final reading = readings[index];
+    final now = DateTime.now();
+    final diff = now.difference(reading.timestamp);
+    
+    if (timeRange == '24h') {
+      return '${diff.inHours}h';
+    } else if (timeRange == '7d') {
+      return '${diff.inDays}d';
+    } else {
+      return '${diff.inDays}d';
     }
-    return spots;
   }
 }
 
@@ -1502,13 +1571,17 @@ class _InsightCard extends StatelessWidget {
 // Statistics Tab Widget
 class _StatisticsTab extends StatelessWidget {
   final List<GlucoseReading> glucoseReadings;
+  final String timeRange;
 
-  const _StatisticsTab({required this.glucoseReadings});
+  const _StatisticsTab({
+    required this.glucoseReadings,
+    required this.timeRange,
+  });
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-      key: const ValueKey('statistics'),
+      key: ValueKey('statistics_$timeRange'),
       padding: const EdgeInsets.all(AppTheme.spacingL),
       child: Column(
         children: [

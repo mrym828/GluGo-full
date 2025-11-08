@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http_parser/http_parser.dart';
+
 
 class ApiService {
   static const String baseUrl = 'http://10.0.2.2:8000/glugo/v1'; // Android emulator
@@ -193,6 +195,26 @@ class ApiService {
   bool get isLoggedIn => _accessToken != null;
 
   Map<String, dynamic>? get cachedProfile => _cachedProfile;
+
+
+  Future<void> resetPassword(String username, String newPassword) async {
+  final url = Uri.parse('$baseUrl/auth/reset-password/');
+  final response = await http.post(
+    url,
+    headers: {'Content-Type': 'application/json'},
+    body: json.encode({
+      'username': username,
+      'new_password': newPassword,
+    }),
+    );
+
+    if (response.statusCode == 200) {
+      print('Password reset successful');
+    } else {
+      throw Exception(json.decode(response.body)['error'] ?? 'Password reset failed');
+    }
+  }
+
 
   // ==================== PROFILE MANAGEMENT ====================
 
@@ -429,68 +451,135 @@ class ApiService {
 
   /// Get food entries
   Future<List<dynamic>> getFoodEntries({
-    DateTime? startDate,
-    DateTime? endDate,
-    String? mealType,
-  }) async {
-    try {
-      var url = '$baseUrl/food-entries/';
-      final queryParams = <String, String>{};
-      
-      if (startDate != null) {
-        queryParams['start_date'] = startDate.toIso8601String();
-      }
-      if (endDate != null) {
-        queryParams['end_date'] = endDate.toIso8601String();
-      }
-      if (mealType != null) {
-        queryParams['meal_type'] = mealType;
-      }
-      
-      if (queryParams.isNotEmpty) {
-        url += '?${Uri(queryParameters: queryParams).query}';
-      }
-      
-      final response = await _makeAuthenticatedRequest(() => http.get(
-        Uri.parse(url),
-        headers: _getHeaders(),
-      ));
-      
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
-      } else {
-        throw Exception('Failed to load food entries: ${response.statusCode}');
-      }
-    } on SocketException {
-      throw Exception('No internet connection. Please check your network.');
-    } catch (e) {
-      print('Error fetching food entries: $e');
-      rethrow;
+  DateTime? startDate,
+  DateTime? endDate,
+  String? mealType,
+  int limit = 50,
+}) async {
+  try {
+    await init();
+    
+    if (!isLoggedIn) {
+      throw Exception('User not logged in');
     }
+
+    final queryParams = <String, String>{};
+    
+    if (startDate != null) {
+      queryParams['start_date'] = startDate.toIso8601String();
+    }
+    if (endDate != null) {
+      queryParams['end_date'] = endDate.toIso8601String();
+    }
+    if (mealType != null) {
+      queryParams['meal_type'] = mealType;
+    }
+    queryParams['limit'] = limit.toString();
+    
+    final uri = Uri.parse('$baseUrl/food-entries/').replace(
+      queryParameters: queryParams.isEmpty ? null : queryParams,
+    );
+    
+    final response = await http.get(
+      uri,
+      headers: {
+        'Authorization': 'Bearer $_accessToken',
+        'Content-Type': 'application/json',
+      },
+    );
+    
+    print('Get food entries response: ${response.statusCode}');
+    
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data is List) {
+        return data;
+      } else if (data is Map && data['results'] != null) {
+        return data['results'] as List;
+      }
+      return [];
+    } else {
+      throw Exception('Failed to get food entries: ${response.statusCode}');
+    }
+  } catch (e) {
+    print('Error getting food entries: $e');
+    rethrow;
   }
+}
+
 
   /// Create food entry
-  Future<dynamic> createFoodEntry(Map<String, dynamic> data) async {
-    try {
-      final response = await _makeAuthenticatedRequest(() => http.post(
-        Uri.parse('$baseUrl/food-entries/'),
-        headers: _getHeaders(),
-        body: json.encode(data),
-      ));
-      
-      if (response.statusCode == 201) {
-        return json.decode(response.body);
-      } else {
-        final error = json.decode(response.body);
-        throw Exception(_formatErrorMessage(error));
-      }
-    } on SocketException {
-      throw Exception('No internet connection. Please check your network.');
-    } catch (e) {
-      print('Error creating food entry: $e');
-      rethrow;
+  Future<Map<String, dynamic>?> createFoodEntry({
+  required String foodName,
+  required String? description,
+  required String mealType,
+  File? imageFile,
+  Map<String, dynamic>? nutritionalInfo,
+  double? totalCarbsG,
+}) async {
+  try {
+    await init();
+    
+    if (!isLoggedIn) {
+      throw Exception('User not logged in');
     }
+
+    final uri = Uri.parse('$baseUrl/food/entries/');
+    
+    // Create multipart request
+    final request = http.MultipartRequest('POST', uri);
+    
+    // Add headers
+    request.headers['Authorization'] = 'Bearer $_accessToken';
+    
+    // Add fields
+    request.fields['food_name'] = foodName;
+    if (description != null) {
+      request.fields['description'] = description;
+    }
+    request.fields['meal_type'] = mealType;
+    
+    if (totalCarbsG != null) {
+      request.fields['total_carbs_g'] = totalCarbsG.toString();
+    }
+    
+    if (nutritionalInfo != null) {
+      request.fields['nutritional_info'] = json.encode(nutritionalInfo);
+    }
+    
+    // Add image file if provided
+    if (imageFile != null) {
+      final imageBytes = await imageFile.readAsBytes();
+      final multipartFile = http.MultipartFile.fromBytes(
+        'image',
+        imageBytes,
+        filename: 'food_${DateTime.now().millisecondsSinceEpoch}.jpg',
+        contentType: MediaType('image', 'jpeg'),
+      );
+      request.files.add(multipartFile);
+    }
+    
+    print('Creating food entry: $uri');
+    
+    // Send request
+    final streamedResponse = await request.send();
+    final response = await http.Response.fromStream(streamedResponse);
+    
+    print('Food entry response status: ${response.statusCode}');
+    print('Food entry response body: ${response.body}');
+    
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final data = json.decode(response.body);
+      return data;
+    } else {
+      print('Food entry creation failed: ${response.body}');
+      throw Exception('Failed to create food entry: ${response.statusCode}');
+    }
+  } catch (e) {
+    print('Error creating food entry: $e');
+    rethrow;
   }
+}
 
   /// Update food entry
   Future<dynamic> updateFoodEntry(String entryId, Map<String, dynamic> data) async {
@@ -535,36 +624,51 @@ class ApiService {
   }
 
   // ==================== AI IMAGE ANALYSIS ====================
-
   /// Analyze food image with AI
-  Future<dynamic> analyzeImage(File imageFile, String mealType) async {
-    try {
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$baseUrl/ai/analyze-image/'),
-      );
-      
-      request.headers.addAll(_getHeaders());
-      request.fields['meal_type'] = mealType;
-      request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
-      
-      final streamedResponse = await _makeAuthenticatedRequest(() async {
-        return await http.Response.fromStream(await request.send());
-      });
-      
-      if (streamedResponse.statusCode == 200) {
-        return json.decode(streamedResponse.body);
-      } else {
-        final error = json.decode(streamedResponse.body);
-        throw Exception(_formatErrorMessage(error));
-      }
-    } on SocketException {
-      throw Exception('No internet connection. Please check your network.');
-    } catch (e) {
-      print('Error analyzing image: $e');
-      rethrow;
+  Future<Map<String, dynamic>?> analyzeImageAI(File imageFile) async {
+  try {
+    await init();
+    
+    if (!isLoggedIn) {
+      throw Exception('User not logged in');
     }
+
+    final uri = Uri.parse('$baseUrl/ai/analyze-image/');
+    
+    // Create multipart request
+    final request = http.MultipartRequest('POST', uri);
+    
+    // Add headers
+    request.headers['Authorization'] = 'Bearer $_accessToken';
+    
+    // Add image file
+    final multipartFile = await http.MultipartFile.fromPath(
+    'image', // must match Django field
+    imageFile.path,
+    contentType: MediaType('image', 'jpeg'), // adjust if PNG
+  );
+  request.files.add(multipartFile);
+    
+    print('Sending image analysis request to: $uri');
+    
+    final streamedResponse = await request.send();
+    final response = await http.Response.fromStream(streamedResponse);
+    
+    print('Image analysis response status: ${response.statusCode}');
+    print('Image analysis response body: ${response.body}');
+    
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final data = json.decode(response.body);
+      return data;
+    } else {
+      print('Image analysis failed: ${response.body}');
+      throw Exception('Failed to analyze image: ${response.statusCode}');
+    }
+  } catch (e) {
+    print('Error analyzing image: $e');
+    rethrow;
   }
+}
 
   // ==================== INSULIN CALCULATION ====================
 

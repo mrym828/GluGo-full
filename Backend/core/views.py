@@ -3,10 +3,11 @@ from django.http import HttpResponse, JsonResponse
 from django.db.models.functions import Lower
 from requests import Response
 from rest_framework.views import APIView
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
-from core.serializers import GlucoseRecordSerializer  
-from core.models import GlucoseRecord, Images
+from rest_framework.response import Response as DRFResponse
+from core.serializers import GlucoseRecordSerializer, FoodEntrySerializer
+from core.models import GlucoseRecord, Images, FoodEntry
 import base64
 import openai
 from django.conf import settings
@@ -163,5 +164,38 @@ class GlucoseRecordListCreateView(generics.ListCreateAPIView):
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
-    
 
+
+class FoodEntryListCreateView(generics.ListCreateAPIView):
+    """
+    API endpoint for creating and listing food entries.
+    """
+    serializer_class = FoodEntrySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return FoodEntry.objects.filter(user=self.request.user).order_by('-timestamp')
+    
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+    
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+
+class FoodEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    API endpoint for retrieving, updating, or deleting a specific food entry.
+    """
+    serializer_class = FoodEntrySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return FoodEntry.objects.filter(user=self.request.user)
+    
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context

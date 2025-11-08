@@ -79,9 +79,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final today = DateTime.now();
       final startOfDay = DateTime(today.year, today.month, today.day);
       final endOfDay = DateTime(today.year, today.month, today.day, 23, 59, 59);
-      
       final profile = await _apiService.getProfile();
-      final glucoseRecords = await _apiService.getGlucoseRecords(startDate: startOfDay, endDate: endOfDay, limit: 50);
+      List<dynamic> glucoseRecords=[];
+      try {
+          glucoseRecords = (await _apiService.getGlucoseRecords(
+            startDate: startOfDay,
+            endDate: endOfDay,
+            limit: 50,
+          ))
+              .where((r) {
+                final t = DateTime.parse(r['timestamp']).toLocal();
+                return t.isAfter(startOfDay) && t.isBefore(endOfDay);
+              })
+              .toList();
+        } catch (e) {
+          print("Failed to load glucose records: $e");
+        }
+
       final foodEntries = await _apiService.getFoodEntries(startDate: startOfDay, endDate: endOfDay);
 
       Map<String, dynamic> glucoseStats = {};
@@ -103,6 +117,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     } catch (e) {
       print('Error loading data: $e');
       
+
       // Try to use cached profile if available
       if (_apiService.cachedProfile != null) {
         if (mounted) {
@@ -128,7 +143,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     records.sort((a, b) {
       final aTime = DateTime.parse(a['timestamp']);
       final bTime = DateTime.parse(b['timestamp']);
-      return bTime.compareTo(aTime); // descending
+      return bTime.compareTo(aTime); 
     });
 
     return records.first;

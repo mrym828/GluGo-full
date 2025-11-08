@@ -571,22 +571,12 @@ class OpenAIAnalyzeImageView(APIView):
     throttle_scope = 'ai_image'
 
     def post(self, request, *args, **kwargs):
-        uploaded = request.FILES.get('image') or request.FILES.get('file')
-        if not uploaded:
+        f = request.FILES.get('image') or request.FILES.get('file')
+        if not f:
             return Response({"details" : "No image provided (use field 'image')."}, status=400)
-        image_bytes = uploaded.read()
-        entry = FoodEntry.objects.create(
-            user = request.user,
-            meal_type= request.data.get("meal_type") or "lunch"
-        )
 
         user = request.user
         request_id = request.headers.get('X-Request-Id') or str(uuid.uuid4())
-
-        # Validate file input
-        f = request.FILES.get('image')
-        if not f:
-            return Response({'error': 'image file required'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Content type check
         content_type = f.content_type
