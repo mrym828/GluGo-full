@@ -10,6 +10,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
+from datetime import timezone as dt_timezone
 from django.utils.dateparse import parse_datetime
 from ..models import (
     LibreConnection, NutritionalInfo,
@@ -275,7 +276,7 @@ class LibreWebhookView(APIView):
     def post(self, request):
         # Webhook signature verification logic would go here
         data = request.data
-        user_id = data.get('user_id')
+        user_id = data.get('id')
         if not user_id:
             return Response({'error': 'user_id required'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -405,7 +406,9 @@ class LibrePasswordLoginView(APIView):
             return Response({
                 'status': 'connected',
                 'region': lc.region,
-                'created': created
+                'created': created,
+                'email': email,
+                'message': 'Successfully connected to LibreView'
             }, status=status.HTTP_200_OK)
         except Exception as e:
             logger.exception('LibrePasswordLogin failed')
@@ -498,32 +501,56 @@ class LibreSyncNowView(APIView):
                 continue
 
             fetched += 1
+            
+            try:
+                ts = datetime.strptime(ts_str, "%m/%d/%Y %I:%M:%S %p")
+                ts = timezone.make_aware(ts, dt_timezone.utc)
+            except ValueError:
 
-            # Parse timestamp 
-            ts = parse_datetime(ts_str)
-            if ts is None:
-                # If Libre sends naive string like "2025-10-30T12:00:00", make it UTC
-                try:
-                    ts = timezone.make_aware(datetime.fromisoformat(ts_str))
-                except Exception:
-                    continue
-            if timezone.is_naive(ts):
-                ts = timezone.make_aware(ts, timezone=timezone.utc)
+                ts = parse_datetime(ts_str)
+                if ts is None:
+                    # If Libre sends naive string like "2025-10-30T12:00:00", make it UTC
+                    try:
+                        ts = timezone.make_aware(datetime.fromisoformat(ts_str))
+                    except Exception:
+                        continue
+                if timezone.is_naive(ts):
+                    ts = timezone.make_aware(ts, dt_timezone.utc)
 
-            # FIXED: Use get_or_create to avoid duplicate records
+
             obj, was_created = GlucoseRecord.objects.get_or_create(
                 user=user,
                 timestamp=ts,
                 source="libre",
-                glucose_level=value,
                 defaults={
-                    'trend_arrow': trend,
+                    'glucose_level': value,
+                    'trend_arrow': trend
                 }
             )
             if was_created:
                 created += 1
 
-        return Response({"fetched": fetched, "created": created}, status=200)
+                # Get the latest glucose record after sync
+        latest_record = GlucoseRecord.objects.filter(
+            user=user,
+            source="libre"
+        ).order_by('-timestamp').first()
+
+        response_data = {
+            "fetched": fetched,
+            "created": created,
+            "records_synced": created
+        }
+
+        # Add latest reading if available
+        if latest_record:
+            response_data["latest_reading"] = {
+                "glucose_level": latest_record.glucose_level,
+                "trend_arrow": latest_record.trend_arrow,
+                "timestamp": latest_record.timestamp.isoformat(),
+            }
+
+        return Response(response_data, status=200)
 
 
 class LibreOAuthCallbackView(APIView):
@@ -554,6 +581,74 @@ class LibreOAuthCallbackView(APIView):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+class LibreConnectionStatusView(APIView):
+    """
+    Check LibreView connection status.
+    
+    GET /api/core/libre/status/
+    
+    Returns:
+    {
+        "connected": true,
+        "email": "user@example.com",
+        "account_id": "abc123",
+        "region": "eu",
+        "last_synced": "2025-11-15T10:30:00Z"
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            connection = LibreConnection.objects.get(user=request.user)
+            
+            return Response({
+                'connected': connection.connected,
+                'email': connection.email,
+                'account_id': connection.account_id,
+                'region': connection.region,
+                'last_synced': connection.last_synced,
+                'api_endpoint': connection.api_endpoint
+            })
+        except LibreConnection.DoesNotExist:
+            return Response({
+                'connected': False,
+                'email': None,
+                'account_id': None,
+                'region': None,
+                'last_synced': None
+            })
+        
+class LibreDisconnectView(APIView):
+    """
+    Disconnect LibreView account.
+    
+    POST /api/core/libre/disconnect/
+    
+    Returns:
+    {
+        "status": "disconnected",
+        "message": "LibreView account disconnected successfully"
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            connection = LibreConnection.objects.get(user=request.user)
+            connection.disconnect()
+            
+            logger.info(f"LibreView disconnected for user {request.user.id}")
+            
+            return Response({
+                'status': 'disconnected',
+                'message': 'LibreView account disconnected successfully'
+            })
+        except LibreConnection.DoesNotExist:
+            return Response(
+                {'error': 'No LibreView connection found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
 class OpenAIAnalyzeImageView(APIView):
     """Production-ready image->nutrition endpoint.

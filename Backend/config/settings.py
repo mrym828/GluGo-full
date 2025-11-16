@@ -26,6 +26,16 @@ LIBRE_STATIC_ENABLED = os.environ.get('LIBRE_STATIC_ENABLED', '0') in ('1', 'tru
 LIBRE_STATIC_EMAIL = os.environ.get('LIBRE_STATIC_EMAIL')
 LIBRE_STATIC_PASSWORD = os.environ.get('LIBRE_STATIC_PASSWORD')
 
+LIBRE_OAUTH_CLIENT_ID = os.getenv('LIBRE_OAUTH_CLIENT_ID', '')
+LIBRE_OAUTH_CLIENT_SECRET = os.getenv('LIBRE_OAUTH_CLIENT_SECRET', '')  
+LIBRE_OAUTH_AUTHORIZE_URL = 'https://api.libreview.io/oauth/authorize'  
+LIBRE_OAUTH_TOKEN_URL = 'https://api.libreview.io/oauth/token'  
+LIBRE_OAUTH_SCOPE = 'read:glucose read:connections'  
+
+LIBRE_PASSWORD_BASE_URL = 'https://api.libreview.io'
+LIBRE_LLU_PRODUCT = 'llu.android'
+LIBRE_LLU_VERSION = '4.16.0'
+
 #celery settings
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/1')

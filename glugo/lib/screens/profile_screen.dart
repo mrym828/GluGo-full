@@ -734,26 +734,62 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                 ),
                 onTap: () {
                   HapticFeedback.lightImpact();
-                  Navigator.pushNamed(context, '/profile-setup').then((_) {
-                    _loadUserProfile(); // Refresh after edit
+                  Navigator.pushNamed(context, '/profile-setup').then((_) { //change to be edited in same page
+                    _loadUserProfile();
                   });
                 },
               ),
-              _ProfileSettingTile(
-                icon: Icons.devices_rounded,
-                iconColor: AppTheme.primaryBlue,
-                title: 'Connected Devices',
-                subtitle: 'Sensors and apps',
-                trailing: StatusBadge(
-                  label: 'Not Connected',
-                  color: AppTheme.textSecondary,
-                  icon: Icons.link_off_rounded,
-                ),
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  Navigator.pushNamed(context, '/device');
-                },
-              ),
+              FutureBuilder<Map<String, dynamic>>(
+              future: _apiService.getLibreStatus(),
+              builder: (context, snapshot) {
+                final isConnected = snapshot.data?['is_connected'] ?? false;
+                final email = snapshot.data?['email'] ?? 'Not connected';
+                final lastSync = snapshot.data?['last_sync'];
+                
+                return _ProfileSettingTile(
+                  icon: Icons.medical_services_rounded,
+                  iconColor: isConnected ? AppTheme.successGreen : AppTheme.textSecondary,
+                  title: 'LibreView',
+                  subtitle: isConnected 
+                    ? email 
+                    : 'Connect for automatic glucose sync',
+                  trailing: isConnected
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          StatusBadge(
+                            label: 'Connected',
+                            color: AppTheme.successGreen,
+                            icon: Icons.check_circle_rounded,
+                          ),
+                          if (lastSync != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'Synced ${_formatLastSync(lastSync)}',
+                              style: AppTheme.bodySmall.copyWith(
+                                color: AppTheme.textTertiary,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ],
+                      )
+                    : StatusBadge(
+                        label: 'Not Connected',
+                        color: AppTheme.textSecondary,
+                        icon: Icons.link_off_rounded,
+                      ),
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.pushNamed(context, '/device').then((_) {
+                      setState(() {}); // Refresh to update status
+                    });
+                  },
+                );
+              },
+            ),
+
               _ProfileSettingTile(
                 icon: Icons.restaurant_rounded,
                 iconColor: AppTheme.mealColor,
@@ -776,6 +812,22 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
       ],
     );
   }
+
+  String _formatLastSync(dynamic lastSync) {
+  try {
+    final DateTime syncTime = DateTime.parse(lastSync.toString());
+    final now = DateTime.now();
+    final difference = now.difference(syncTime);
+    
+    if (difference.inMinutes < 1) return 'just now';
+    if (difference.inMinutes < 60) return '${difference.inMinutes}m ago';
+    if (difference.inHours < 24) return '${difference.inHours}h ago';
+    return '${difference.inDays}d ago';
+  } catch (e) {
+    return 'recently';
+  }
+}
+
   // Add a new section in the profile screen
 Widget _buildInsulinSettings() {
   return Column(

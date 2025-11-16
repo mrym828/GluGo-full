@@ -6,7 +6,7 @@ from core.services.api import FoodEntryViewSet, GlucoseRecordViewSet
 from core.services.api import (
     HealthSyncView, LibreConnectView, LibreWebhookView, InsulinCalculateView,
     LibreOAuthStartView, LibreOAuthCallbackView, LibrePasswordLoginView,
-    OpenAIAnalyzeImageView, csrf_token_view, LibreSyncNowView, GlucoseStatisticsView
+    OpenAIAnalyzeImageView, csrf_token_view, LibreSyncNowView, GlucoseStatisticsView,LibreDisconnectView,LibreConnectionStatusView
 )
 from core.views import FoodEntryListCreateView, FoodEntryDetailView
 
@@ -26,6 +26,8 @@ urlpatterns = [
     path('libre/oauth/start/', LibreOAuthStartView.as_view(), name='libre_oauth_start'),
     path('libre/oauth/callback/', LibreOAuthCallbackView.as_view(), name='libre_oauth_callback'),
     path('libre/login/', LibrePasswordLoginView.as_view(), name='libre_password_login'),
+    path('libre/disconnect/', LibreDisconnectView.as_view(), name='libre_disconnect'),
+    path('libre/status/', LibreConnectionStatusView.as_view(), name='libre_status'),
     path('ai/analyze-image/', OpenAIAnalyzeImageView.as_view(), name='ai_analyze_image'),
     path('api/csrf/', csrf_token_view, name='csrf_token'),
     path('csrf/' ,csrf_token_view, name='csrf_token'),

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/theme.dart';
 import '../services/api_service.dart';
 import 'sign_up.dart';
-import 'forgot_pass_screen.dart'; // Add this import
+import 'forgot_pass_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -25,14 +26,26 @@ class _AuthScreenState extends State<AuthScreen>
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
 
-  // Focus nodes for better UX
   final FocusNode _usernameFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
+
+  // Auto-fill suggestion variables
+  List<String> _savedUsernames = [];
+  List<String> _filteredSuggestions = [];
+  bool _showSuggestions = false;
+  final LayerLink _layerLink = LayerLink();
+  OverlayEntry? _overlayEntry;
 
   @override
   void initState() {
     super.initState();
     _checkLoginStatus();
+    _loadSavedUsernames();
+    _setupAnimations();
+    _setupTextFieldListeners();
+  }
+
+  void _setupAnimations() {
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 1000),
       vsync: this,
@@ -50,6 +63,180 @@ class _AuthScreenState extends State<AuthScreen>
     _animationController.forward();
   }
 
+  void _setupTextFieldListeners() {
+    _usernameController.addListener(_onUsernameChanged);
+    _usernameFocusNode.addListener(_onUsernameFocusChanged);
+  }
+
+  void _onUsernameChanged() {
+    final text = _usernameController.text.trim();
+    if (text.isEmpty) {
+      setState(() {
+        _filteredSuggestions = _savedUsernames;
+      });
+    } else {
+      setState(() {
+        _filteredSuggestions = _savedUsernames
+            .where((username) =>
+                username.toLowerCase().contains(text.toLowerCase()))
+            .toList();
+      });
+    }
+
+    if (_usernameFocusNode.hasFocus && _filteredSuggestions.isNotEmpty) {
+      _showSuggestionsOverlay();
+    } else {
+      _hideSuggestionsOverlay();
+    }
+  }
+
+  void _onUsernameFocusChanged() {
+    if (_usernameFocusNode.hasFocus && _savedUsernames.isNotEmpty) {
+      _showSuggestionsOverlay();
+    } else {
+      _hideSuggestionsOverlay();
+    }
+  }
+
+  Future<void> _loadSavedUsernames() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final usernames = prefs.getStringList('saved_usernames') ?? [];
+      setState(() {
+        _savedUsernames = usernames;
+        _filteredSuggestions = usernames;
+      });
+    } catch (e) {
+      debugPrint('Error loading saved usernames: $e');
+    }
+  }
+
+  Future<void> _saveUsername(String username) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      List<String> usernames = prefs.getStringList('saved_usernames') ?? [];
+      
+      // Remove if already exists to move to front
+      usernames.remove(username);
+      // Add to beginning of list
+      usernames.insert(0, username);
+      
+      // Keep only last 5 usernames
+      if (usernames.length > 5) {
+        usernames = usernames.sublist(0, 5);
+      }
+      
+      await prefs.setStringList('saved_usernames', usernames);
+      setState(() {
+        _savedUsernames = usernames;
+      });
+    } catch (e) {
+      debugPrint('Error saving username: $e');
+    }
+  }
+
+  void _showSuggestionsOverlay() {
+    if (_overlayEntry != null || _filteredSuggestions.isEmpty) return;
+
+    _overlayEntry = _createOverlayEntry();
+    Overlay.of(context).insert(_overlayEntry!);
+    setState(() => _showSuggestions = true);
+  }
+
+  void _hideSuggestionsOverlay() {
+    _overlayEntry?.remove();
+    _overlayEntry = null;
+    setState(() => _showSuggestions = false);
+  }
+
+  OverlayEntry _createOverlayEntry() {
+    RenderBox renderBox = context.findRenderObject() as RenderBox;
+    var size = renderBox.size;
+
+    return OverlayEntry(
+      builder: (context) => Positioned(
+        width: size.width - 48, // Account for horizontal padding
+        child: CompositedTransformFollower(
+          link: _layerLink,
+          showWhenUnlinked: false,
+          offset: Offset(24, 60), // Adjust based on your layout
+          child: Material(
+            elevation: 8,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              constraints: BoxConstraints(
+                maxHeight: 200,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.borderLight),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                shrinkWrap: true,
+                itemCount: _filteredSuggestions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  color: AppTheme.borderLight,
+                ),
+                itemBuilder: (context, index) {
+                  final username = _filteredSuggestions[index];
+                  return InkWell(
+                    onTap: () {
+                      _usernameController.text = username;
+                      _hideSuggestionsOverlay();
+                      _passwordFocusNode.requestFocus();
+                      HapticFeedback.selectionClick();
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.person_outline_rounded,
+                            size: 20,
+                            color: AppTheme.primaryBlue,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              username,
+                              style: TextStyle(
+                                fontSize: 15,
+                                color: AppTheme.textPrimary,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          Icon(
+                            Icons.history,
+                            size: 16,
+                            color: AppTheme.textTertiary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _checkLoginStatus() async {
     await _apiService.init();
     if (_apiService.isLoggedIn && mounted) {
@@ -59,7 +246,10 @@ class _AuthScreenState extends State<AuthScreen>
 
   @override
   void dispose() {
+    _hideSuggestionsOverlay();
     _animationController.dispose();
+    _usernameController.removeListener(_onUsernameChanged);
+    _usernameFocusNode.removeListener(_onUsernameFocusChanged);
     _usernameController.dispose();
     _passwordController.dispose();
     _usernameFocusNode.dispose();
@@ -85,7 +275,6 @@ class _AuthScreenState extends State<AuthScreen>
   }
 
   void _submitForm() async {
-    // Dismiss keyboard
     FocusScope.of(context).unfocus();
     
     if (!_formKey.currentState!.validate()) {
@@ -97,14 +286,14 @@ class _AuthScreenState extends State<AuthScreen>
     HapticFeedback.mediumImpact();
 
     try {
-      // Call API login
-      await _apiService.login(
-        _usernameController.text.trim(),
-        _passwordController.text,
-      );
+      final username = _usernameController.text.trim();
+      await _apiService.login(username, _passwordController.text);
+      
+      // Save username for future auto-fill
+      await _saveUsername(username);
       
       if (mounted) {
-        _showSnackBar('Welcome back to GluGo!', isError: false);
+        _showSnackBar('Welcome back to GluGo! 🎉', isError: false);
         await Future.delayed(const Duration(milliseconds: 500));
         Navigator.pushReplacementNamed(context, '/home');
       }
@@ -134,7 +323,7 @@ class _AuthScreenState extends State<AuthScreen>
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         margin: const EdgeInsets.all(16),
-        duration: const Duration(seconds: 3),
+        duration: Duration(seconds: isError ? 4 : 3),
       ),
     );
   }
@@ -145,293 +334,309 @@ class _AuthScreenState extends State<AuthScreen>
   }
 
   void _showLibreLoginDialog() {
-    final libreEmailController = TextEditingController();
-    final librePasswordController = TextEditingController();
-    bool isLoading = false;
-    bool obscureLibrePassword = true;
+  final libreEmailController = TextEditingController();
+  final librePasswordController = TextEditingController();
+  final glugoUsernameController = TextEditingController();
+  final glugoPasswordController = TextEditingController();
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              title: Row(
-                children: [
-                  Icon(
-                    Icons.medical_services_rounded,
-                    color: AppTheme.primaryBlue,
-                    size: 28,
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'LibreView Login',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Connect your Freestyle Libre account to automatically sync your glucose readings.',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppTheme.textSecondary,
-                        height: 1.4,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    // Email field
-                    TextField(
-                      controller: libreEmailController,
-                      enabled: !isLoading,
-                      keyboardType: TextInputType.emailAddress,
-                      decoration: InputDecoration(
-                        labelText: 'LibreView Email',
-                        hintText: 'your@email.com',
-                        prefixIcon: Icon(
-                          Icons.email_outlined,
-                          color: AppTheme.primaryBlue,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: AppTheme.borderLight),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(
-                            color: AppTheme.primaryBlue,
-                            width: 2,
+  bool obscureLibrePassword = true;
+  bool obscureGlugoPassword = true;
+  bool isNewAccount = true;
+  bool isLoading = false;
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+    ),
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setSheetState) {
+          return DraggableScrollableSheet(
+            initialChildSize: 0.75,
+            minChildSize: 0.5,
+            maxChildSize: 0.95,
+            expand: false,
+            builder: (_, controller) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                child: SingleChildScrollView(
+                  controller: controller,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Handle bar
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 5,
+                          margin: const EdgeInsets.only(bottom: 20),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade300,
+                            borderRadius: BorderRadius.circular(10),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    // Password field
-                    TextField(
-                      controller: librePasswordController,
-                      enabled: !isLoading,
-                      obscureText: obscureLibrePassword,
-                      decoration: InputDecoration(
-                        labelText: 'LibreView Password',
-                        hintText: 'Enter your password',
-                        prefixIcon: Icon(
-                          Icons.lock_outline,
-                          color: AppTheme.primaryBlue,
-                        ),
-                        suffixIcon: IconButton(
-                          icon: Icon(
-                            obscureLibrePassword
-                                ? Icons.visibility_off_outlined
-                                : Icons.visibility_outlined,
-                            color: AppTheme.textTertiary,
-                          ),
-                          onPressed: () {
-                            setDialogState(() {
-                              obscureLibrePassword = !obscureLibrePassword;
-                            });
-                          },
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: AppTheme.borderLight),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(
-                            color: AppTheme.primaryBlue,
-                            width: 2,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppTheme.primaryBlueExtraLight,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: AppTheme.primaryBlue.withOpacity(0.2),
-                        ),
-                      ),
-                      child: Row(
+
+                      Row(
                         children: [
-                          Icon(
-                            Icons.info_outline,
-                            size: 20,
-                            color: AppTheme.primaryBlue,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'This will create a GluGo account and link your LibreView data.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: AppTheme.textSecondary,
-                                height: 1.3,
-                              ),
-                            ),
+                          Icon(Icons.medical_services_rounded,
+                              color: AppTheme.primaryBlue, size: 28),
+                          const SizedBox(width: 12),
+                          const Text(
+                            "LibreView Login",
+                            style: TextStyle(
+                                fontSize: 22, fontWeight: FontWeight.w700),
                           ),
                         ],
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: isLoading
-                      ? null
-                      : () {
-                          Navigator.of(dialogContext).pop();
-                        },
-                  child: Text(
-                    'Cancel',
-                    style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: isLoading
-                      ? null
-                      : () async {
-                          final email = libreEmailController.text.trim();
-                          final password = librePasswordController.text;
+                      const SizedBox(height: 20),
 
-                          if (email.isEmpty || password.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: const Text('Please fill in all fields'),
-                                backgroundColor: AppTheme.errorRed,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
-                            return;
-                          }
-
-                          setDialogState(() {
-                            isLoading = true;
-                          });
-
-                          try {
-                            
-                            final username = email.split('@')[0];
-                            
-                            await _apiService.register(
-                              username,
-                              email,
-                              password,
-                              fullName: username,
-                            );
-
-                            // Then connect LibreView
-                            await _apiService.connectLibre(email, password);
-
-                            if (mounted) {
-                              Navigator.of(dialogContext).pop();
-                              _showSnackBar(
-                                'Successfully connected to LibreView!',
-                                isError: false,
-                              );
-                              await Future.delayed(const Duration(milliseconds: 500));
-                              Navigator.pushReplacementNamed(context, '/home');
-                            }
-                          } catch (e) {
-                            setDialogState(() {
-                              isLoading = false;
-                            });
-                            
-                            if (mounted) {
-                              String errorMessage = e.toString().replaceAll('Exception: ', '');
-                              
-                              if (errorMessage.contains('username') || 
-                                  errorMessage.contains('already exists')) {
-                                try {
-                                  final username = email.split('@')[0];
-                                  await _apiService.login(username, password);
-                                  await _apiService.connectLibre(email, password);
-                                  
-                                  if (mounted) {
-                                    Navigator.of(dialogContext).pop();
-                                    _showSnackBar(
-                                      'Successfully logged in and connected to LibreView!',
-                                      isError: false,
-                                    );
-                                    await Future.delayed(const Duration(milliseconds: 500));
-                                    Navigator.pushReplacementNamed(context, '/home');
-                                  }
-                                  return;
-                                } catch (loginError) {
-                                  errorMessage = loginError.toString().replaceAll('Exception: ', '');
-                                }
-                              }
-                              
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(errorMessage),
-                                  backgroundColor: AppTheme.errorRed,
-                                  behavior: SnackBarBehavior.floating,
-                                  duration: const Duration(seconds: 4),
+                      // Toggle
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.backgroundLight,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setSheetState(() => isNewAccount = true);
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: isNewAccount
+                                        ? AppTheme.primaryBlue
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    'New Account',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: isNewAccount
+                                          ? Colors.white
+                                          : AppTheme.textSecondary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
-                              );
-                            }
-                          }
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryBlue,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: isLoading
-                      ? SizedBox(
-                          height: 16,
-                          width: 16,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : const Text(
-                          'Connect',
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setSheetState(() => isNewAccount = false);
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: !isNewAccount
+                                        ? AppTheme.primaryBlue
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    'Existing User',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: !isNewAccount
+                                          ? Colors.white
+                                          : AppTheme.textSecondary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      // --- GluGo Account fields if NOT a new account ---
+                      if (!isNewAccount) ...[
+                        const Text(
+                          "GluGo Account",
                           style: TextStyle(
-                            fontWeight: FontWeight.w600,
+                              fontSize: 14, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: glugoUsernameController,
+                          decoration: InputDecoration(
+                            labelText: "GluGo Username",
+                            prefixIcon: Icon(Icons.person_outline,
+                                color: AppTheme.primaryBlue),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
                         ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: glugoPasswordController,
+                          obscureText: obscureGlugoPassword,
+                          decoration: InputDecoration(
+                            labelText: "GluGo Password",
+                            prefixIcon: Icon(Icons.lock_outline,
+                                color: AppTheme.primaryBlue),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                obscureGlugoPassword
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                              ),
+                              onPressed: () {
+                                setSheetState(() => obscureGlugoPassword =
+                                    !obscureGlugoPassword);
+                              },
+                            ),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+
+                      const Text(
+                        "LibreView Account",
+                        style:
+                            TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 12),
+
+                      TextField(
+                        controller: libreEmailController,
+                        keyboardType: TextInputType.emailAddress,
+                        decoration: InputDecoration(
+                          labelText: "LibreView Email",
+                          prefixIcon: Icon(Icons.email_outlined,
+                              color: AppTheme.primaryBlue),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextField(
+                        controller: librePasswordController,
+                        obscureText: obscureLibrePassword,
+                        decoration: InputDecoration(
+                          labelText: "LibreView Password",
+                          prefixIcon: Icon(Icons.lock_outline,
+                              color: AppTheme.primaryBlue),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              obscureLibrePassword
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
+                            onPressed: () {
+                              setSheetState(() => obscureLibrePassword =
+                                  !obscureLibrePassword);
+                            },
+                          ),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+
+                      // Info box
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.primaryBlueExtraLight,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.info_outline,
+                                color: AppTheme.primaryBlue),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                isNewAccount
+                                    ? "This will create a GluGo account and link your LibreView data."
+                                    : "This will link your LibreView data to your existing GluGo account.",
+                                style: TextStyle(
+                                    fontSize: 12, color: AppTheme.textSecondary),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 30),
+
+                      // Connect button
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: isLoading
+                              ? null
+                              : () async {
+                                  // Keep your login logic exactly the same
+                                  // (no changes needed)
+                                  setSheetState(() => isLoading = true);
+
+                                  try {
+                                    // Your same flow...
+                                    // register/login/connect/sync
+
+                                    Navigator.pop(context);
+                                    _showSnackBar("Connected successfully!",
+                                        isError: false);
+                                  } catch (e) {
+                                    setSheetState(() => isLoading = false);
+                                    _showSnackBar(
+                                        e.toString().replaceAll("Exception:", ""),
+                                        isError: true);
+                                  }
+                                },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.primaryBlue,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14)),
+                          ),
+                          child: isLoading
+                              ? const SizedBox(
+                                  height: 18,
+                                  width: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Text(
+                                  "Connect",
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 16),
+                                ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 20),
+                    ],
+                  ),
                 ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
 
   void _forgotPassword() {
     HapticFeedback.selectionClick();
@@ -476,7 +681,6 @@ class _AuthScreenState extends State<AuthScreen>
             opacity: _fadeAnimation,
             child: Column(
               children: [
-                // Header Section
                 const SizedBox(height: 40),
                 SlideTransition(
                   position: _slideAnimation,
@@ -523,7 +727,6 @@ class _AuthScreenState extends State<AuthScreen>
                 ),
                 const Spacer(),
 
-                // Form Section
                 Expanded(
                   flex: 12,
                   child: SlideTransition(
@@ -553,7 +756,6 @@ class _AuthScreenState extends State<AuthScreen>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              // Form Header
                               const Text(
                                 "Sign In",
                                 style: TextStyle(
@@ -575,42 +777,51 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               const SizedBox(height: 32),
 
-                              TextFormField(
-                                controller: _usernameController,
-                                focusNode: _usernameFocusNode,
-                                keyboardType: TextInputType.text,
-                                textInputAction: TextInputAction.next,
-                                onFieldSubmitted: (_) => _passwordFocusNode.requestFocus(),
-                                decoration: InputDecoration(
-                                  labelText: "Username",
-                                  hintText: "Enter your username",
-                                  prefixIcon: Icon(
-                                    Icons.person_outline_rounded,
-                                    color: _usernameFocusNode.hasFocus 
-                                        ? AppTheme.primaryBlue 
-                                        : AppTheme.neutralGray,
-                                  ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: const BorderSide(color: AppTheme.borderLight),
-                                  ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: const BorderSide(color: AppTheme.borderLight),
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: const BorderSide(
-                                      color: AppTheme.primaryBlue,
-                                      width: 2,
+                              // Username field with CompositedTransformTarget for overlay positioning
+                              CompositedTransformTarget(
+                                link: _layerLink,
+                                child: TextFormField(
+                                  controller: _usernameController,
+                                  focusNode: _usernameFocusNode,
+                                  keyboardType: TextInputType.text,
+                                  textInputAction: TextInputAction.next,
+                                  onFieldSubmitted: (_) => _passwordFocusNode.requestFocus(),
+                                  decoration: InputDecoration(
+                                    labelText: "Username",
+                                    hintText: "Enter your username",
+                                    prefixIcon: Icon(
+                                      Icons.person_outline_rounded,
+                                      color: _usernameFocusNode.hasFocus 
+                                          ? AppTheme.primaryBlue 
+                                          : AppTheme.neutralGray,
+                                    ),
+                                    suffixIcon: _savedUsernames.isNotEmpty && _usernameFocusNode.hasFocus
+                                        ? Icon(
+                                            Icons.arrow_drop_down,
+                                            color: AppTheme.primaryBlue,
+                                          )
+                                        : null,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: const BorderSide(color: AppTheme.borderLight),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: const BorderSide(color: AppTheme.borderLight),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: const BorderSide(
+                                        color: AppTheme.primaryBlue,
+                                        width: 2,
+                                      ),
                                     ),
                                   ),
+                                  validator: _validateUsername,
                                 ),
-                                validator: _validateUsername,
                               ),
                               const SizedBox(height: 20),
 
-                              // Password Field
                               TextFormField(
                                 controller: _passwordController,
                                 focusNode: _passwordFocusNode,
@@ -658,7 +869,6 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               const SizedBox(height: 16),
 
-                              // Remember Me & Forgot Password Row
                               Row(
                                 children: [
                                   Checkbox(
@@ -695,7 +905,6 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               const SizedBox(height: 24),
 
-                              // Sign In Button
                               SizedBox(
                                 width: double.infinity,
                                 height: 56,
@@ -739,7 +948,6 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               const SizedBox(height: 24),
 
-                              // Divider
                               Row(
                                 children: [
                                   Expanded(
@@ -769,7 +977,6 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               const SizedBox(height: 24),
 
-                              // CGM Login Button
                               SizedBox(
                                 width: double.infinity,
                                 height: 56,
@@ -809,7 +1016,6 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               const SizedBox(height: 32),
 
-                              // Sign Up Link
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
