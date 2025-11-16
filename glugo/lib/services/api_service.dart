@@ -733,7 +733,7 @@ class ApiService {
         Uri.parse('$baseUrl/libre/sync-now/'),
         headers: _getHeaders(),
       ));
-      
+      print(response);
       if (response.statusCode == 200) {
         return json.decode(response.body);
       } else {
@@ -774,7 +774,6 @@ class ApiService {
         Uri.parse('$baseUrl/libre/status/'),
         headers: _getHeaders(),
       ));
-      
       if (response.statusCode == 200) {
         return json.decode(response.body);
       } else {

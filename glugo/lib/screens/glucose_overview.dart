@@ -64,105 +64,113 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
   }
 
   Future<void> _loadGlucoseData() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+  setState(() {
+    _isLoading = true;
+    _errorMessage = null;
+  });
 
-    try {
-      await _apiService.init();
-      
-      if (!_apiService.isLoggedIn) {
-        if (mounted) {
-          Navigator.pushReplacementNamed(context, '/login');
-        }
-        return;
-      }
-
-      final now = DateTime.now();
-      DateTime startDate;
-      int limitRecords;
-      
-      switch (_selectedTimeRange) {
-        case '7d':
-          startDate = now.subtract(const Duration(days: 7));
-          limitRecords = 500;
-          break;
-        case '30d':
-          startDate = now.subtract(const Duration(days: 30));
-          limitRecords = 1000;
-          break;
-        case '90d':
-          startDate = now.subtract(const Duration(days: 90));
-          limitRecords = 2000;
-          break;
-        case '24h':
-        default:
-          startDate = now.subtract(const Duration(hours: 24));
-          limitRecords = 100;
-          break;
-      }
-
-      print('Loading glucose data for range: $_selectedTimeRange');
-      print('Start date: $startDate, End date: $now');
-
-      // Fetch glucose records with date filtering
-      final data = await _apiService.getGlucoseRecords(
-        startDate: startDate,
-        endDate: now,
-        limit: limitRecords,
-      );
-      
+  try {
+    await _apiService.init();
+    
+    if (!_apiService.isLoggedIn) {
       if (mounted) {
-        setState(() {
-          _glucoseReadings = (data as List)
-              .map((json) => GlucoseReading.fromJson(json))
-              .where((reading) => 
-                  reading.value > 0 && 
-                  reading.timestamp.isAfter(startDate) &&
-                  reading.timestamp.isBefore(now)
-              )
-              .toList();
-          _glucoseReadings.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-          _isLoading = false;
-        });
+        Navigator.pushReplacementNamed(context, '/login');
+      }
+      return;
+    }
+
+    final now = DateTime.now();
+    DateTime startDate;
+    
+    switch (_selectedTimeRange) {
+      case '7d': startDate = now.subtract(const Duration(days: 7)); break;
+      case '30d': startDate = now.subtract(const Duration(days: 30)); break;
+      case '90d': startDate = now.subtract(const Duration(days: 90)); break;
+      case '24h':
+      default: startDate = now.subtract(const Duration(hours: 24)); break;
+    }
+
+    print('Loading glucose data for range: $_selectedTimeRange');
+
+    // Fetch glucose records
+    final data = await _apiService.getGlucoseRecords(
+      startDate: startDate,
+      endDate: now,
+    );
+    
+    if (mounted) {
+      setState(() {
+        _glucoseReadings = (data as List)
+            .map((json) => GlucoseReading.fromJson(json))
+            .where((reading) => reading.value > 0) // Only filter invalid values
+            .toList();
         
-        print('Loaded ${_glucoseReadings.length} readings for $_selectedTimeRange');
-      }
+        // Sort by timestamp descending (newest first)
+        _glucoseReadings.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        _isLoading = false;
+      });
       
-      if (_glucoseReadings.isEmpty && mounted) {
-        _showSnackBar('No glucose readings found for $_selectedTimeRange.', 
-            isSuccess: false);
-      }
-    } catch (e) {
-      print('Error loading glucose data: $e');
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Failed to load glucose data: ${e.toString()}';
-        });
-        _showSnackBar('Error loading glucose data', isSuccess: false);
-      }
+      print('Loaded ${_glucoseReadings.length} readings for $_selectedTimeRange');
       
-      _generateSampleData();
+      // Debug: Check sources of readings
+      final manualReadings = _glucoseReadings.where((r) => r.source == 'manual').length;
+      final libreReadings = _glucoseReadings.where((r) => r.source == 'libre').length;
+      print('Manual: $manualReadings, Libre: $libreReadings');
+    }
+    
+  } catch (e) {
+    print('Error loading glucose data: $e');
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Failed to load glucose data: ${e.toString()}';
+      });
+      _showSnackBar('Error loading glucose data', isSuccess: false);
     }
   }
+}
 
 
   Future<void> _syncLibreData() async {
-    try {
-      _showSnackBar('Syncing glucose data from Libre...', isSuccess: true);
-      
-      await _apiService.libreSyncNow();
-      
-      await Future.delayed(const Duration(seconds: 2));
-      await _loadGlucoseData();
-      
-      _showSnackBar('Sync completed successfully!', isSuccess: true);
-    } catch (e) {
-      _showSnackBar('Failed to sync: ${e.toString()}', isSuccess: false);
+  try {
+    setState(() => _isLoading = true);
+    _showSnackBar('Syncing glucose data from LibreView...', isSuccess: true);
+    
+    final result = await _apiService.libreSyncNow();
+    final recordCount = result['records_synced'] ?? 0;
+    
+    // Always reload complete data after sync
+    await _loadGlucoseData();
+    
+    if (mounted) {
+      _showSnackBar(
+        recordCount > 0
+          ? 'Synced ${recordCount} new reading${recordCount > 1 ? 's' : ''}!'
+          : 'All readings are up to date',
+        isSuccess: true,
+      );
+    }
+  } catch (e) {
+    if (!mounted) return;
+    
+    final errorMsg = e.toString().replaceAll('Exception: ', '');
+    
+    if (errorMsg.contains('not connected') || 
+        errorMsg.contains('No LibreView') ||
+        errorMsg.contains('missing_credentials')) {
+      _showSnackBar(
+        'LibreView not connected. Connect in Device settings.',
+        isSuccess: false,
+      );
+    } else {
+      _showSnackBar('Failed to sync: $errorMsg', isSuccess: false);
+    }
+  } finally {
+    if (mounted) {
+      setState(() => _isLoading = false);
     }
   }
+}
 
   void _generateSampleData() {
     final now = DateTime.now();
@@ -391,8 +399,26 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
       actions: [
         IconButton(
           onPressed: _syncLibreData,
-          icon: const Icon(Icons.sync, color: Colors.white),
-          tooltip: 'Sync with Libre',
+          icon: Stack(
+          children: [
+            const Icon(Icons.sync, color: Colors.white),
+            Positioned(
+              right: 0,
+              top: 0,
+              child: Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: AppTheme.successGreen,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+              ),
+            ),
+          ],
+        ),
+        tooltip: 'Sync with LibreView',
+
         ),
         IconButton(
           onPressed: () => _showSnackBar('Export feature coming soon!'),
@@ -420,6 +446,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
         return _OverviewTab(
           glucoseReadings: _glucoseReadings,
           timeRange: _selectedTimeRange,
+          apiService: _apiService,
         );
       case 1:
         return _TrendsTab(
@@ -435,6 +462,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
         return _OverviewTab(
           glucoseReadings: _glucoseReadings,
           timeRange: _selectedTimeRange,
+          apiService: _apiService,
         );
     }
   }
@@ -604,10 +632,12 @@ class _TabSelector extends StatelessWidget {
 class _OverviewTab extends StatelessWidget {
   final List<GlucoseReading> glucoseReadings;
   final String timeRange;
+  final ApiService apiService;
 
   const _OverviewTab({
     required this.glucoseReadings,
     required this.timeRange,
+    required this.apiService,
   });
 
   @override
@@ -620,7 +650,7 @@ class _OverviewTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (hasReadings) _CurrentGlucoseCard(reading: glucoseReadings.first),
+          if (hasReadings) _CurrentGlucoseCard(reading: glucoseReadings.first, apiService: apiService),
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
           if (hasReadings) _GlucoseChart(readings: glucoseReadings, timeRange: timeRange),
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
@@ -637,8 +667,9 @@ class _OverviewTab extends StatelessWidget {
 // Current Glucose Card Widget
 class _CurrentGlucoseCard extends StatelessWidget {
   final GlucoseReading reading;
+  final ApiService apiService;
 
-  const _CurrentGlucoseCard({required this.reading});
+  const _CurrentGlucoseCard({required this.reading, required this.apiService});
 
   @override
   Widget build(BuildContext context) {
@@ -711,10 +742,70 @@ class _CurrentGlucoseCard extends StatelessWidget {
               ),
             ],
           ),
+          _buildLastSyncInfo(),
         ],
       ),
     );
   }
+
+  Widget _buildLastSyncInfo() {
+  return FutureBuilder<Map<String, dynamic>>(
+    future: apiService.getLibreStatus(),
+    builder: (context, snapshot) {
+      if (!snapshot.hasData || !(snapshot.data?['is_connected'] ?? false)) {
+        return const SizedBox.shrink();
+      }
+      
+      final lastSync = snapshot.data?['last_sync'];
+      if (lastSync == null) return const SizedBox.shrink();
+      
+      return Container(
+        padding: const EdgeInsets.all(AppTheme.spacingM),
+        margin: const EdgeInsets.symmetric(horizontal: AppTheme.spacingL),
+        decoration: BoxDecoration(
+          color: AppTheme.successGreen.withOpacity(0.1),
+          borderRadius: AppTheme.radiusM,
+          border: Border.all(
+            color: AppTheme.successGreen.withOpacity(0.3),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.cloud_done_rounded,
+              size: 16,
+              color: AppTheme.successGreen,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Last synced ${_formatLastSync(lastSync)}',
+              style: AppTheme.bodySmall.copyWith(
+                color: AppTheme.successGreen,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+String _formatLastSync(dynamic lastSync) {
+  try {
+    final DateTime syncTime = DateTime.parse(lastSync.toString());
+    final now = DateTime.now();
+    final difference = now.difference(syncTime);
+    
+    if (difference.inMinutes < 1) return 'just now';
+    if (difference.inMinutes < 60) return '${difference.inMinutes}m ago';
+    if (difference.inHours < 24) return '${difference.inHours}h ago';
+    return '${difference.inDays}d ago';
+  } catch (e) {
+    return 'recently';
+  }
+}
 
   String _getTimeAgo(DateTime timestamp) {
     final now = DateTime.now();

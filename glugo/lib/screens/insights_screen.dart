@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../utils/theme.dart';
 import '../widgets/shared_components.dart';
 import 'package:fl_chart/fl_chart.dart';
+import '../services/api_service.dart';
 
 class InsightsScreen extends StatefulWidget {
   const InsightsScreen({super.key});
@@ -19,11 +20,14 @@ class _InsightsScreenState extends State<InsightsScreen> with TickerProviderStat
   String _selectedTimeRange = '14d';
   final List<String> _timeRanges = ['7d', '14d', '1m', '3m'];
 
+  final ApiService _apiService = ApiService();
+
   @override
   void initState() {
     super.initState();
     _initializeAnimations();
     _animationController.forward();
+    _apiService.init(); 
   }
 
   void _initializeAnimations() {
@@ -185,6 +189,7 @@ class _InsightsScreenState extends State<InsightsScreen> with TickerProviderStat
                   ranges: _timeRanges,
                   onChanged: _onTimeRangeChanged,
                 ),
+                _buildDataSourceInfo(),
                 const SizedBox(height: AppTheme.spacingXL),
                 _build14DaySummary(),
                 const SizedBox(height: AppTheme.spacingXL),
@@ -460,6 +465,93 @@ class _InsightsScreenState extends State<InsightsScreen> with TickerProviderStat
       ],
     );
   }
+  // Add after time range selector
+Widget _buildDataSourceInfo() {
+  return FutureBuilder<Map<String, dynamic>>(
+    future: _apiService.getLibreStatus(),
+    builder: (context, snapshot) {
+      if (!snapshot.hasData) return const SizedBox.shrink();
+      
+      final isConnected = snapshot.data?['is_connected'] ?? false;
+      final totalRecords = snapshot.data?['total_records'] ?? 0;
+      
+      if (!isConnected) {
+        return Container(
+          margin: const EdgeInsets.symmetric(
+            horizontal: AppTheme.spacingL,
+            vertical: AppTheme.spacingM,
+          ),
+          padding: const EdgeInsets.all(AppTheme.spacingM),
+          decoration: BoxDecoration(
+            color: AppTheme.infoBlue.withOpacity(0.1),
+            borderRadius: AppTheme.radiusM,
+            border: Border.all(color: AppTheme.infoBlue.withOpacity(0.3)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: AppTheme.infoBlue, size: 20),
+              const SizedBox(width: AppTheme.spacingM),
+              Expanded(
+                child: Text(
+                  'Connect LibreView for more accurate insights',
+                  style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.infoBlue,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pushNamed(context, '/device'),
+                child: Text('Connect', style: TextStyle(color: AppTheme.infoBlue)),
+              ),
+            ],
+          ),
+        );
+      }
+      
+      return Container(
+        margin: const EdgeInsets.symmetric(
+          horizontal: AppTheme.spacingL,
+          vertical: AppTheme.spacingM,
+        ),
+        padding: const EdgeInsets.all(AppTheme.spacingM),
+        decoration: BoxDecoration(
+          color: AppTheme.successGreen.withOpacity(0.1),
+          borderRadius: AppTheme.radiusM,
+          border: Border.all(color: AppTheme.successGreen.withOpacity(0.3)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.cloud_done_rounded, color: AppTheme.successGreen, size: 20),
+            const SizedBox(width: AppTheme.spacingM),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'LibreView Connected',
+                    style: AppTheme.bodySmall.copyWith(
+                      color: AppTheme.successGreen,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    '$totalRecords readings synced',
+                    style: AppTheme.bodySmall.copyWith(
+                      color: AppTheme.textSecondary,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
 }
 
 // Time Range Selector Widget

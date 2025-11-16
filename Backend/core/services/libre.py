@@ -125,7 +125,7 @@ def get_libreview_connection(base_url: str, access_token: str, account_id: str):
         'authorization': f'Bearer {access_token}',
         'account-id': account_id_hashed,    
     })
-    resp = request.get(f"{base_url}/llu/connections", headers=headers, timeout= 20)
+    resp = requests.request.get(f"{base_url}/llu/connections", headers=headers, timeout= 20)
     resp.raise_for_status()
     return resp.json()
 

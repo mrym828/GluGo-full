@@ -26,6 +26,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   List<dynamic> _glucoseRecords = [];
   List<dynamic> _foodEntries = [];
   Map<String, dynamic>? _glucoseStats;
+  bool _showLibreBanner = false;
+  Map<String, dynamic>? _libreStatus;
 
   @override
   void initState() {
@@ -33,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initializeAnimations();
     _animationController.forward();
     _loadData();
+    _setupPeriodicRefresh();
   }
 
   void _initializeAnimations() {
@@ -58,13 +61,57 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     ));
   }
 
+  void _setupPeriodicRefresh() {
+    // Refresh data every 2 minutes when app is active
+    Future.delayed(const Duration(minutes: 2), () {
+      if (mounted && !_isLoading) {
+        _loadData();
+      }
+      _setupPeriodicRefresh(); // Reschedule
+    });
+  }
+
+  Future<void> _checkLibreConnection() async {
+    try {
+      final status = await _apiService.getLibreStatus();
+      final isConnected = status['is_connected'] ?? false;
+      
+      if (!isConnected && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.info_outline, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text('Connect LibreView for automatic glucose syncing'),
+                ),
+              ],
+            ),
+            action: SnackBarAction(
+              label: 'Connect',
+              textColor: Colors.white,
+              onPressed: () {
+                Navigator.pushNamed(context, '/device');
+              },
+            ),
+            backgroundColor: AppTheme.primaryBlue,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error checking Libre connection: $e');
+    }
+  }
+
   Future<void> _loadData() async {
-    
     setState(() {
       _isLoading = true;
       _hasError = false;
     });
-
+    
     try {
       await _apiService.init();
       
@@ -79,46 +126,37 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final today = DateTime.now();
       final startOfDay = DateTime(today.year, today.month, today.day);
       final endOfDay = DateTime(today.year, today.month, today.day, 23, 59, 59);
+      
+      // Load data in parallel for better performance
+      final results = await Future.wait([
+        _apiService.getProfile(),
+        _loadGlucoseRecordsWithDebug(startOfDay, endOfDay),
+        _apiService.getFoodEntries(startDate: startOfDay, endDate: endOfDay),
+        _loadGlucoseStatsWithFallback(startOfDay, endOfDay),
+      ], eagerError: false);
+
       final profile = await _apiService.getProfile();
-      List<dynamic> glucoseRecords=[];
-      try {
-          glucoseRecords = (await _apiService.getGlucoseRecords(
-            startDate: startOfDay,
-            endDate: endOfDay,
-            limit: 50,
-          ))
-              .where((r) {
-                final t = DateTime.parse(r['timestamp']).toLocal();
-                return t.isAfter(startOfDay) && t.isBefore(endOfDay);
-              })
-              .toList();
-        } catch (e) {
-          print("Failed to load glucose records: $e");
-        }
+      final glucoseRecords = results[1] as List<dynamic>;
+      final foodEntries = results[2] as List<dynamic>;
+      final glucoseStats = results[3] as Map<String, dynamic>;
 
-      final foodEntries = await _apiService.getFoodEntries(startDate: startOfDay, endDate: endOfDay);
-
-      Map<String, dynamic> glucoseStats = {};
-      try {
-        glucoseStats = await _apiService.getGlucoseStatistics(
-            startDate: startOfDay, endDate: endOfDay);
-      } catch (e) {
-        print('⚠️ Failed to load stats, continuing without them: $e');
+      if (mounted) {
+        setState(() {
+          _userProfile = profile;
+          _glucoseRecords = glucoseRecords;
+          _foodEntries = foodEntries;
+          _glucoseStats = glucoseStats;
+          _isLoading = false;
+          _hasError = false;
+        });
+        
+        // Debug logging
+        _debugDataState();
       }
-      setState(() {
-        _userProfile = profile;
-        _glucoseRecords = glucoseRecords;
-        _foodEntries = foodEntries;
-        _glucoseStats = glucoseStats;
-        _isLoading = false;
-        _hasError = false;
-      });
 
     } catch (e) {
-      print('Error loading data: $e');
+      print('Error loading home data: $e');
       
-
-      // Try to use cached profile if available
       if (_apiService.cachedProfile != null) {
         if (mounted) {
           setState(() {
@@ -137,16 +175,86 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       }
     }
   }
+
+  Future<List<dynamic>> _loadGlucoseRecordsWithDebug(DateTime start, DateTime end) async {
+    try {
+      final records = await _apiService.getGlucoseRecords(
+        startDate: start,
+        endDate: end,
+        limit: 50,
+      );
+      
+      print('📊 HomeScreen: Loaded ${records.length} total glucose records');
+      
+      // Debug: Check sources
+      final manualCount = records.where((r) => r['source'] == 'manual').length;
+      final libreCount = records.where((r) => r['source'] == 'libre').length;
+      final otherCount = records.length - manualCount - libreCount;
+      
+      print('📊 Sources - Manual: $manualCount, Libre: $libreCount, Other: $otherCount');
+      
+      // Sort by timestamp (newest first)
+      records.sort((a, b) {
+        final aTime = DateTime.parse(a['timestamp']);
+        final bTime = DateTime.parse(b['timestamp']);
+        return bTime.compareTo(aTime);
+      });
+      
+      return records;
+    } catch (e) {
+      print('❌ Failed to load glucose records: $e');
+      return [];
+    }
+  }
+
+  Future<Map<String, dynamic>> _loadGlucoseStatsWithFallback(DateTime start, DateTime end) async {
+    try {
+      return await _apiService.getGlucoseStatistics(
+        startDate: start, 
+        endDate: end
+      );
+    } catch (e) {
+      print('⚠️ Failed to load stats, using empty: $e');
+      return {};
+    }
+  }
+
+  void _debugDataState() {
+    print('🏠 HomeScreen Data State:');
+    print('  - Glucose records: ${_glucoseRecords.length}');
+    print('  - Food entries: ${_foodEntries.length}');
+    print('  - User profile: ${_userProfile != null ? "loaded" : "null"}');
+    print('  - Glucose stats: ${_glucoseStats?.keys.join(", ")}');
+    
+    if (_glucoseRecords.isNotEmpty) {
+      final latest = _glucoseRecords.first;
+      print('  - Latest reading: ${latest['glucose_level']} mg/dL at ${latest['timestamp']} (source: ${latest['source']})');
+    }
+  }
+
   Map<String, dynamic>? getLatestGlucoseReading(List<dynamic> records) {
     if (records.isEmpty) return null;
 
-    records.sort((a, b) {
+    // Filter out invalid records
+    final validRecords = records.where((record) {
+      final glucose = record['glucose_level']?.toDouble();
+      final timestamp = record['timestamp'];
+      return glucose != null && glucose > 0 && timestamp != null;
+    }).toList();
+
+    if (validRecords.isEmpty) return null;
+
+    // Sort by timestamp (newest first)
+    validRecords.sort((a, b) {
       final aTime = DateTime.parse(a['timestamp']);
       final bTime = DateTime.parse(b['timestamp']);
-      return bTime.compareTo(aTime); 
+      return bTime.compareTo(aTime);
     });
 
-    return records.first;
+    final latest = validRecords.first;
+    print('🔍 Latest reading: ${latest['glucose_level']} mg/dL (source: ${latest['source']})');
+    
+    return latest;
   }
 
   @override
@@ -266,7 +374,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         child: SlideTransition(
           position: _slideAnimation,
           child: RefreshIndicator(
-            onRefresh: _loadData,
+            onRefresh: () async {
+              HapticFeedback.mediumImpact();
+              await _loadData();
+            },
             color: AppTheme.primaryBlue,
             child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
@@ -324,7 +435,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         : 0,
                   ),
                   const SizedBox(height: AppTheme.spacingXL),
-                  _QuickActionsSection(onShowSnackBar: _showSnackBar),
+                  _QuickActionsSection(onShowSnackBar: _showSnackBar, onRefreshData: _loadData),
                   const SizedBox(height: AppTheme.spacingXL),
                   _RecentActivitySection(
                     onShowSnackBar: _showSnackBar,
@@ -349,7 +460,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 }
-
 
 class _WelcomeSection extends StatelessWidget {
   final String userName;
@@ -438,7 +548,7 @@ class _WelcomeSection extends StatelessWidget {
                 child: MetricCard(
                   title: 'Average',
                   value: avgGlucose > 0 ? avgGlucose.toString() : '--',
-                  unit: avgGlucose > 0 ? 'mg' : '',
+                  unit: avgGlucose > 0 ? 'mg\n/dl' : '',
                   accentColor: AppTheme.textPrimary,
                 ),
               ),
@@ -449,7 +559,6 @@ class _WelcomeSection extends StatelessWidget {
     );
   }
 }
-
 
 class _CurrentGlucoseSection extends StatelessWidget {
   final VoidCallback onLogReading;
@@ -469,6 +578,7 @@ class _CurrentGlucoseSection extends StatelessWidget {
     final hasData = latestReading != null;
     final glucoseValue = latestReading?['glucose_level']?.toDouble() ?? 0.0;
     final timestamp = latestReading?['timestamp'];
+    final source = latestReading?['source'] ?? 'manual';
     
     String timeAgo = 'No data';
     if (hasData && timestamp != null) {
@@ -557,13 +667,26 @@ class _CurrentGlucoseSection extends StatelessWidget {
                                       .withOpacity(0.1),
                                   borderRadius: AppTheme.radiusS,
                                 ),
-                                child: Text(
-                                  AppTheme.getGlucoseStatus(glucoseValue),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppTheme.getGlucoseColor(glucoseValue),
-                                  ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      AppTheme.getGlucoseStatus(glucoseValue),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppTheme.getGlucoseColor(glucoseValue),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      source == 'libre' 
+                                          ? Icons.cloud_sync_rounded 
+                                          : Icons.bloodtype_rounded,
+                                      size: 12,
+                                      color: AppTheme.getGlucoseColor(glucoseValue),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ],
@@ -581,7 +704,7 @@ class _CurrentGlucoseSection extends StatelessWidget {
                       borderRadius: AppTheme.radiusM,
                     ),
                     child: Icon(
-                      Icons.bloodtype_rounded,
+                      source == 'libre' ? Icons.cloud_sync_rounded : Icons.bloodtype_rounded,
                       size: 32,
                       color: hasData && glucoseValue > 0
                           ? AppTheme.getGlucoseColor(glucoseValue)
@@ -764,8 +887,51 @@ class _QuickStatsSection extends StatelessWidget {
 
 class _QuickActionsSection extends StatelessWidget {
   final Function(String, {bool isSuccess}) onShowSnackBar;
+  final VoidCallback onRefreshData;
 
-  const _QuickActionsSection({required this.onShowSnackBar});
+  const _QuickActionsSection({
+    required this.onShowSnackBar,
+    required this.onRefreshData,
+  });
+
+  Future<void> _syncLibreView(BuildContext context) async {
+    final apiService = ApiService();
+    await apiService.init();
+
+    try {
+      final status = await apiService.getLibreStatus();
+      if (!(status['is_connected'] ?? false)){
+        onShowSnackBar('Please connect LibreView first', isSuccess: false);
+        Navigator.pushNamed(context, '/device');
+        return;
+      }
+
+      onShowSnackBar('Syncing glucose data...', isSuccess: true);
+
+      final result = await apiService.libreSyncNow();
+      final recordsCount = result['records_synced'] ?? 0;
+
+      // Add a small delay to ensure backend has processed the sync
+      await Future.delayed(const Duration(seconds: 1));
+      
+      // Force refresh the data
+      onRefreshData();
+
+      onShowSnackBar(
+        recordsCount > 0
+        ? 'Synced $recordsCount new readings! Refreshing data...'
+        : 'Already up to date.',
+        isSuccess: true,
+      );
+
+    } catch (e) {
+      print('❌ Sync error: $e');
+      onShowSnackBar(
+        'Sync failed: ${e.toString().replaceAll('Exception: ', '')}',
+        isSuccess: false,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -780,10 +946,10 @@ class _QuickActionsSection extends StatelessWidget {
           children: [
             Expanded(
               child: _ActionCard(
-                icon: Icons.qr_code_scanner_rounded,
-                title: 'Connect Sensor',
-                subtitle: 'Scan your device',
-                onTap: () => onShowSnackBar('Sensor scan coming soon!'),
+                icon: Icons.sync_rounded,
+                title: 'Sync LibreView',
+                subtitle: 'Update readings',
+                onTap: () => _syncLibreView(context),
               ),
             ),
             const SizedBox(width: AppTheme.spacingM),
@@ -792,7 +958,7 @@ class _QuickActionsSection extends StatelessWidget {
                 icon: Icons.camera_alt_rounded,
                 title: 'Food Scanner',
                 subtitle: 'Identify nutrition',
-                onTap: () => onShowSnackBar('Food scanner coming soon!'),
+                onTap: () => Navigator.pushNamed(context, '/scanner'),
               ),
             ),
           ],
@@ -942,6 +1108,7 @@ class _RecentActivitySection extends StatelessWidget {
       final record = glucoseRecords[i];
       final glucose = record['glucose_level']?.toDouble() ?? 0.0;
       final timestampStr = record['timestamp'];
+      final source = record['source'] ?? 'manual';
       
       if (timestampStr == null || glucose <= 0) continue;
       
@@ -951,10 +1118,10 @@ class _RecentActivitySection extends StatelessWidget {
         
         activities.add(
           CustomListItem(
-            icon: Icons.bloodtype_rounded,
+            icon: source == 'libre' ? Icons.cloud_sync_rounded : Icons.bloodtype_rounded,
             iconColor: AppTheme.getGlucoseColor(glucose),
             title: 'Glucose Reading',
-            subtitle: '${glucose.toInt()} mg/dL • $timeStr',
+            subtitle: '${glucose.toInt()} mg/dL • $timeStr • ${source == 'libre' ? 'Libre' : 'Manual'}',
             trailing: StatusBadge(
               label: AppTheme.getGlucoseStatus(glucose),
               color: AppTheme.getGlucoseColor(glucose),
@@ -1036,32 +1203,19 @@ class _RecentActivitySection extends StatelessWidget {
     // Remove divider from last item
     if (activities.isNotEmpty) {
       final lastActivity = activities.last;
-      // Assuming CustomListItem has a way to update showDivider, you might need to reconstruct it
-      // For now, we'll just ensure the last item doesn't show a divider
-      activities[activities.length - 1] = CustomListItem(
-        icon: lastActivity is CustomListItem ? _getIconFromListItem(lastActivity) : Icons.error,
-        iconColor: lastActivity is CustomListItem ? _getIconColorFromListItem(lastActivity) : AppTheme.errorRed,
-        title: lastActivity is CustomListItem ? _getTitleFromListItem(lastActivity) : 'Error',
-        subtitle: lastActivity is CustomListItem ? _getSubtitleFromListItem(lastActivity) : 'Invalid data',
-        trailing: lastActivity is CustomListItem ? _getTrailingFromListItem(lastActivity) : null,
-        showDivider: false,
-      );
+      // Reconstruct the last item without divider
+      if (lastActivity is CustomListItem) {
+        activities[activities.length - 1] = CustomListItem(
+          icon: lastActivity.icon,
+          iconColor: lastActivity.iconColor,
+          title: lastActivity.title,
+          subtitle: lastActivity.subtitle,
+          trailing: lastActivity.trailing,
+          showDivider: false,
+        );
+      }
     }
 
     return activities;
   }
-
-  // Helper methods to extract data from existing CustomListItem (these would need to be implemented based on your CustomListItem class)
-  IconData _getIconFromListItem(CustomListItem item) => Icons.error; // Placeholder
-  Color _getIconColorFromListItem(CustomListItem item) => AppTheme.errorRed; // Placeholder
-  String _getTitleFromListItem(CustomListItem item) => 'Error'; // Placeholder
-  String _getSubtitleFromListItem(CustomListItem item) => 'Invalid data'; // Placeholder
-  Widget? _getTrailingFromListItem(CustomListItem item) => null; // Placeholder
 }
-
-// Placeholder helper methods - you'll need to implement these based on your CustomListItem implementation
-IconData _getIconFromListItem(CustomListItem item) => Icons.error;
-Color _getIconColorFromListItem(CustomListItem item) => AppTheme.errorRed;
-String _getTitleFromListItem(CustomListItem item) => 'Error';
-String _getSubtitleFromListItem(CustomListItem item) => 'Invalid data';
-Widget? _getTrailingFromListItem(CustomListItem item) => null;
