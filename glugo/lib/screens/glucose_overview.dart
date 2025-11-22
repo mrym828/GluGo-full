@@ -6,6 +6,7 @@ import '../models/glucose_reading.dart';
 import '../services/api_service.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'log_reading_page.dart';
+import 'all_readings_screen.dart';
 
 class GlucoseOverviewScreen extends StatefulWidget {
   const GlucoseOverviewScreen({super.key});
@@ -29,6 +30,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
   final ApiService _apiService = ApiService();
   
   List<GlucoseReading> _glucoseReadings = [];
+  
   bool _isLoading = false;
   String? _errorMessage;
 
@@ -81,30 +83,45 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
 
     final now = DateTime.now();
     DateTime startDate;
+    DateTime endDate = now;
     
     switch (_selectedTimeRange) {
-      case '7d': startDate = now.subtract(const Duration(days: 7)); break;
-      case '30d': startDate = now.subtract(const Duration(days: 30)); break;
-      case '90d': startDate = now.subtract(const Duration(days: 90)); break;
+      case '7d': 
+        startDate = now.subtract(const Duration(days: 7)); 
+        break;
+      case '30d': 
+        startDate = now.subtract(const Duration(days: 30)); 
+        break;
+      case '90d': 
+        startDate = now.subtract(const Duration(days: 90)); 
+        break;
       case '24h':
-      default: startDate = now.subtract(const Duration(hours: 24)); break;
+      default: 
+        startDate = now.subtract(const Duration(hours: 24)); 
+        break;
     }
 
-    print('Loading glucose data for range: $_selectedTimeRange');
+    print('Loading glucose data for range: $_selectedTimeRange from $startDate to $endDate');
 
     // Fetch glucose records
     final data = await _apiService.getGlucoseRecords(
       startDate: startDate,
-      endDate: now,
+      endDate: endDate,
     );
     
     if (mounted) {
       setState(() {
         _glucoseReadings = (data as List)
             .map((json) => GlucoseReading.fromJson(json))
-            .where((reading) => reading.value > 0) // Only filter invalid values
+            .where((reading) => reading.value > 0) 
             .toList();
         
+        if (_selectedTimeRange == '24h') {
+          final today = DateTime(now.year, now.month, now.day);
+          _glucoseReadings = _glucoseReadings.where((reading) => 
+              reading.timestamp.isAfter(today)).toList();
+        }
+
         // Sort by timestamp descending (newest first)
         _glucoseReadings.sort((a, b) => b.timestamp.compareTo(a.timestamp));
         _isLoading = false;
@@ -128,6 +145,30 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
       _showSnackBar('Error loading glucose data', isSuccess: false);
     }
   }
+  List<GlucoseReading> _getFilteredReadings(List<GlucoseReading> allReadings) {
+  final now = DateTime.now();
+  
+  switch (_selectedTimeRange) {
+    case '24h':
+      final startOfDay = DateTime(now.year, now.month, now.day);
+      return allReadings.where((reading) => 
+          reading.timestamp.isAfter(startOfDay)).toList();
+    case '7d':
+      final weekAgo = now.subtract(const Duration(days: 7));
+      return allReadings.where((reading) => 
+          reading.timestamp.isAfter(weekAgo)).toList();
+    case '30d':
+      final monthAgo = now.subtract(const Duration(days: 30));
+      return allReadings.where((reading) => 
+          reading.timestamp.isAfter(monthAgo)).toList();
+    case '90d':
+      final threeMonthsAgo = now.subtract(const Duration(days: 90));
+      return allReadings.where((reading) => 
+          reading.timestamp.isAfter(threeMonthsAgo)).toList();
+    default:
+      return allReadings;
+  }
+}
 }
 
 
@@ -171,53 +212,6 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
     }
   }
 }
-
-  void _generateSampleData() {
-    final now = DateTime.now();
-    int dataPoints;
-    Duration interval;
-    
-    switch (_selectedTimeRange) {
-      case '7d':
-        dataPoints = 35; 
-        interval = const Duration(hours: 5);
-        break;
-      case '30d':
-        dataPoints = 60;
-        interval = const Duration(hours: 12);
-        break;
-      case '90d':
-        dataPoints = 90; 
-        interval = const Duration(days: 1);
-        break;
-      case '24h':
-      default:
-        dataPoints = 15; 
-        interval = const Duration(minutes: 90);
-        break;
-    }
-    
-    _glucoseReadings = List.generate(dataPoints, (index) {
-      final baseValue = 110.0;
-      final variation = 40 * (0.5 - (index % 5) / 10.0);
-      final randomFactor = (index % 3) * 15.0;
-      final value = (baseValue + variation + randomFactor).clamp(65.0, 200.0);
-      
-      return GlucoseReading(
-        id: '${index + 1}',
-        timestamp: now.subtract(interval * index),
-        value: value,
-      );
-    }).reversed.toList(); // Reverse to have oldest first
-    
-    print('Generated ${_glucoseReadings.length} sample readings for $_selectedTimeRange');
-  }
-
-  @override
-  void dispose() {
-    _animationController.dispose();
-    super.dispose();
-  }
 
   void _showSnackBar(String message, {bool isSuccess = true}) {
     ScaffoldMessenger.of(context).clearSnackBars();
@@ -656,7 +650,8 @@ class _OverviewTab extends StatelessWidget {
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
           if (hasReadings) _QuickStats(readings: glucoseReadings),
           if (hasReadings) const SizedBox(height: AppTheme.spacingXL),
-          _RecentReadings(readings: hasReadings ? glucoseReadings.take(5).toList() : []),
+          _RecentReadings(readings: hasReadings ? glucoseReadings.take(5).toList() : [],
+          allReadings: glucoseReadings,),
           const SizedBox(height: 100),
         ],
       ),
@@ -979,26 +974,35 @@ class _GlucoseChart extends StatelessWidget {
 
   double _getChartInterval() {
     final count = readings.length;
-    if (count <= 10) return 2;
-    if (count <= 30) return 5;
-    if (count <= 60) return 10;
-    return 15;
+    if (count <= 8) return 1;
+    if (count <= 16) return 2;
+    if (count <= 30) return 4;
+    if (count <= 60) return 8;
+    return 12;
   }
 
   String _getChartLabel(int index) {
     if (index < 0 || index >= readings.length) return '';
     
     final reading = readings[index];
-    final now = DateTime.now();
-    final diff = now.difference(reading.timestamp);
-    
     if (timeRange == '24h') {
-      return '${diff.inHours}h';
-    } else if (timeRange == '7d') {
-      return '${diff.inDays}d';
-    } else {
-      return '${diff.inDays}d';
-    }
+    // Show time in 12-hour format for 24h range
+    final hour = reading.timestamp.hour;
+    final minute = reading.timestamp.minute;
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+    return '${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+  } else if (timeRange == '7d') {
+    // Show day names for 7d range
+    final now = DateTime.now();
+    final diff = now.difference(reading.timestamp).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    return '${diff}d ago';
+  } else {
+    // Show dates for longer ranges
+    return '${reading.timestamp.month}/${reading.timestamp.day}';
+  }
   }
 
   int _calculateTimeInRange() {
@@ -1103,8 +1107,12 @@ class _QuickStats extends StatelessWidget {
 // Recent Readings Widget
 class _RecentReadings extends StatelessWidget {
   final List<GlucoseReading> readings;
+  final List<GlucoseReading> allReadings;
 
-  const _RecentReadings({required this.readings});
+  const _RecentReadings({
+    required this.readings,
+    required this.allReadings,
+    });
 
   @override
   Widget build(BuildContext context) {
@@ -1114,7 +1122,15 @@ class _RecentReadings extends StatelessWidget {
         SectionHeader(
           title: 'Recent Readings',
           action: TextButton.icon(
-            onPressed: () {},
+            onPressed: () {
+              HapticFeedback.selectionClick();
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => AllReadingsPage(readings: readings),
+                ),
+              );
+            },
             icon: const Icon(Icons.arrow_forward_rounded, size: 16),
             label: const Text('View All'),
             style: TextButton.styleFrom(
@@ -1182,17 +1198,27 @@ class _ReadingItem extends StatelessWidget {
 
   String _getTimeAgo(DateTime timestamp) {
     final now = DateTime.now();
-    final difference = now.difference(timestamp);
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
     
-    if (difference.inMinutes < 1) {
-      return 'Just now';
-    } else if (difference.inMinutes < 60) {
-      return '${difference.inMinutes}m ago';
-    } else if (difference.inHours < 24) {
-      return '${difference.inHours}h ago';
-    } else {
-      return '${difference.inDays}d ago';
-    }
+    if (timestamp.isAfter(today)) {
+      final hour = timestamp.hour;
+      final minute = timestamp.minute;
+      final period = hour >= 12 ? 'PM' : 'AM';
+      final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+      return '${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+  }
+
+  else if (timestamp.isAfter(yesterday) && timestamp.isBefore(today)){
+    return 'Yesterday';
+  }
+  else if (timestamp.isAfter(today.subtract(const Duration(days: 6)))) {
+    final days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return days[timestamp.weekday - 1];
+  }
+  else {
+    return '${timestamp.month}/${timestamp.day}/${timestamp.year.toString().substring(2)}';
+  }
   }
 }
 
@@ -1397,16 +1423,24 @@ class _DetailedChart extends StatelessWidget {
     if (index >= readings.length) return '';
     
     final reading = readings[index];
-    final now = DateTime.now();
-    final diff = now.difference(reading.timestamp);
-    
     if (timeRange == '24h') {
-      return '${diff.inHours}h';
-    } else if (timeRange == '7d') {
-      return '${diff.inDays}d';
-    } else {
-      return '${diff.inDays}d';
-    }
+    // Show time in 12-hour format for 24h range
+    final hour = reading.timestamp.hour;
+    final minute = reading.timestamp.minute;
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+    return '${displayHour}:${minute.toString().padLeft(2, '0')}\n$period';
+  } else if (timeRange == '7d') {
+    // Show day names for 7d range
+    final now = DateTime.now();
+    final diff = now.difference(reading.timestamp).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yest';
+    return '${diff}d';
+  } else {
+    // Show dates for longer ranges
+    return '${reading.timestamp.month}/${reading.timestamp.day}';
+  }
   }
 }
 

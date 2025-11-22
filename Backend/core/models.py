@@ -65,6 +65,11 @@ class FoodEntry(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     meal_type = models.CharField(max_length=16, choices=MEAL_TYPES, default="lunch")
     nutritional_info = models.OneToOneField(NutritionalInfo, on_delete=models.SET_NULL, null=True, blank=True)
+
+    total_carbs = models.FloatField(null=True, blank=True, help_text="Total carbohydrates in grams")
+    total_calories = models.FloatField(null=True, blank=True, help_text="Total calories")
+    total_protein = models.FloatField(null=True, blank=True, help_text="Total protein in grams")
+    total_fat = models.FloatField(null=True, blank=True, help_text="Total fat in grams")
   
     insulin_recommended = models.FloatField(blank=True, null=True)
     insulin_rounded = models.FloatField(blank=True, null=True)

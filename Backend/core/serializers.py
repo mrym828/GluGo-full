@@ -19,9 +19,10 @@ class FoodEntrySerializer(serializers.ModelSerializer):
         model = FoodEntry
         fields = (
             'id', 'user', 'food_name', 'description', 'timestamp', 'meal_type',
-            'image', 'nutritional_info', 'insulin_recommended', 'insulin_rounded','total_carbs_g'
+            'image', 'nutritional_info', 'insulin_recommended', 'insulin_rounded','total_carbs_g', 
+            'total_carbs','total_calories', 'total_protein', 'total_fat',   
         )
-        read_only_fields = ('insulin_recommended', 'insulin_rounded', 'user')
+        read_only_fields = ('insulin_recommended', 'insulin_rounded', 'user', 'id', 'timestamp')
     
     def create(self, validated_data):
         total_carbs_g = validated_data.pop('total_carbs_g', None)

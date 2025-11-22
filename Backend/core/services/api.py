@@ -37,6 +37,7 @@ import base64
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from typing import Optional
+from ..services.prediction import prediction_service, TORCH_AVAILABLE, LIGHTGBM_AVAILABLE
 
 @csrf_exempt
 def csrf_token_view(request):
@@ -68,25 +69,52 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
         return FoodEntry.objects.none()
 
     def perform_create(self, serializer):
-        # Ensure the created FoodEntry is owned by the requesting user.
+        # Save the instance first
         instance = serializer.save(user=self.request.user)
         print("perform_create triggered")
 
-    
+        # Extract carbs from request data
         total_carbs = None
-        if instance.nutritional_info and instance.nutritional_info.carbs:
+        
+        # Try to get from direct field
+        if 'total_carbs' in self.request.data:
+            try:
+                total_carbs = float(self.request.data['total_carbs'])
+            except (ValueError, TypeError):
+                pass
+        
+        # Try alternative field names
+        if total_carbs is None and 'total_carbs_g' in self.request.data:
+            try:
+                total_carbs = float(self.request.data['total_carbs_g'])
+            except (ValueError, TypeError):
+                pass
+        
+        # Try from nutritional_info if present
+        if total_carbs is None and instance.nutritional_info:
             try:
                 total_carbs = float(instance.nutritional_info.carbs)
-            except Exception:
-                total_carbs = None
-        if total_carbs is None:
-            total_carbs = self.request.data.get('total_carbs_g') or self.request.data.get('total_carbs')
-            try:
-                total_carbs = float(total_carbs) if total_carbs is not None else None
-            except Exception:
-                total_carbs = None
-
+            except (ValueError, TypeError, AttributeError):
+                pass
+        
+        # Save carbs to instance if found
         if total_carbs is not None:
+            instance.total_carbs = total_carbs
+            
+            # Also save other nutrition if available
+            if 'total_calories' in self.request.data or 'calories_estimate' in self.request.data:
+                try:
+                    instance.total_calories = float(
+                        self.request.data.get('total_calories') or 
+                        self.request.data.get('calories_estimate', 0)
+                    )
+                except (ValueError, TypeError):
+                    pass
+            
+            instance.save()
+        
+        # Calculate insulin recommendation
+        if total_carbs and total_carbs > 0:
             carb_ratio = getattr(self.request.user, 'insulin_to_carb_ratio', None) or 0
             correction_factor = getattr(self.request.user, 'correction_factor', None)
 
@@ -710,3 +738,181 @@ class OpenAIAnalyzeImageView(APIView):
             user_hash = hashlib.sha256(str(getattr(user, 'id', None)).encode('utf-8')).hexdigest()[:16]
             logger.exception('ai_request unexpected user=%s request_id=%s', user_hash, request_id)
             return Response({'error': 'internal_error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+class GlucosePredictionView(APIView):
+    """
+    Predict glucose levels 30 minutes ahead.
+    
+    GET /api/core/glucose/predict/
+    
+    Query parameters:
+    - model: 'ensemble' (default), 'cnn_lstm', 'lgb', or 'simple'
+    - lookback: minutes of history to use (default: 240 for 4 hours)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            from core.services.prediction import prediction_service
+            
+            model_type = request.query_params.get('model', 'ensemble')
+            lookback = int(request.query_params.get('lookback', 240))
+            
+            valid_models = ['ensemble', 'cnn_lstm', 'lgb', 'simple']
+            if model_type not in valid_models:
+                return Response(
+                    {'success': False, 'error': f'Invalid model. Choose from: {valid_models}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            result = prediction_service.predict_for_user(
+                user=request.user,
+                model_type=model_type,
+                lookback_minutes=lookback
+            )
+            
+            return Response(result, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            return Response(
+                {'success': False, 'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.exception('Glucose prediction failed')
+            return Response(
+                {'success': False, 'error': 'Prediction service error'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class MealGlucosePredictionView(APIView):
+    """
+    NEW ENDPOINT: Predict glucose levels 30 minutes after a meal.
+    
+    POST /api/core/glucose/predict-meal/
+    
+    Request body:
+    {
+        "carbs": 45.5,         // Required: carbohydrates in grams
+        "insulin": 4.5,        // Optional: insulin dose in units
+        "model": "ensemble",   // Optional: model type
+        "lookback": 240        // Optional: lookback minutes
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "prediction": {
+            "glucose_mg_dl": 165.3,
+            "time_horizon_minutes": 30,
+            "predictions_by_model": {...},
+            "risk_assessment": {...},
+            "current_glucose": 120.0,
+            "change": 45.3,
+            "timeline": [
+                {"minutes": 0, "glucose": 120.0, "timestamp": "..."},
+                {"minutes": 15, "glucose": 142.7, "timestamp": "..."},
+                {"minutes": 30, "glucose": 165.3, "timestamp": "..."}
+            ],
+            "meal_impact": 35.2
+        },
+        "meal_info": {
+            "carbs_g": 45.5,
+            "insulin_units": 4.5
+        },
+        "metadata": {...}
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            from core.services.prediction import prediction_service
+            
+            # Validate required fields
+            carbs = request.data.get('carbs')
+            if carbs is None:
+                return Response(
+                    {'success': False, 'error': 'Carbs value is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            try:
+                carbs = float(carbs)
+                if carbs < 0 or carbs > 500:
+                    return Response(
+                        {'success': False, 'error': 'Carbs must be between 0 and 500g'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except (ValueError, TypeError):
+                return Response(
+                    {'success': False, 'error': 'Invalid carbs value'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Optional fields
+            insulin = request.data.get('insulin', 0)
+            try:
+                insulin = float(insulin) if insulin else 0
+            except (ValueError, TypeError):
+                insulin = 0
+            
+            model_type = request.data.get('model', 'ensemble')
+            lookback = int(request.data.get('lookback', 240))
+            
+            valid_models = ['ensemble', 'cnn_lstm', 'lgb', 'simple']
+            if model_type not in valid_models:
+                return Response(
+                    {'success': False, 'error': f'Invalid model. Choose from: {valid_models}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Make prediction
+            result = prediction_service.predict_after_meal(
+                user=request.user,
+                meal_carbs=carbs,
+                meal_insulin=insulin,
+                model_type=model_type,
+                lookback_minutes=lookback
+            )
+            
+            return Response(result, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            return Response(
+                {'success': False, 'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.exception('Meal glucose prediction failed')
+            return Response(
+                {'success': False, 'error': 'Prediction service error'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class PredictionStatusView(APIView):
+    """Check prediction service status."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        from core.services.prediction import prediction_service, TORCH_AVAILABLE, LIGHTGBM_AVAILABLE
+        
+        return Response({
+            'success': True,
+            'service_loaded': prediction_service.loaded,
+            'available_models': {
+                'cnn_lstm': TORCH_AVAILABLE and hasattr(prediction_service, 'cnn_lstm_path'),
+                'lgb': LIGHTGBM_AVAILABLE and prediction_service.lgb_model is not None,
+                'simple': True,
+                'ensemble': prediction_service.loaded
+            },
+            'dependencies': {
+                'pytorch': TORCH_AVAILABLE,
+                'lightgbm': LIGHTGBM_AVAILABLE,
+            },
+            'message': 'Prediction service ready' if prediction_service.loaded 
+                      else 'No ML models loaded, using baseline only'
+        })

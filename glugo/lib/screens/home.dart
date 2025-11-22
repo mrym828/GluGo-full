@@ -62,7 +62,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _setupPeriodicRefresh() {
-    // Refresh data every 2 minutes when app is active
     Future.delayed(const Duration(minutes: 2), () {
       if (mounted && !_isLoading) {
         _loadData();
@@ -115,7 +114,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     try {
       await _apiService.init();
       
-      // Check if user is logged in
       if (!_apiService.isLoggedIn) {
         if (mounted) {
           Navigator.pushReplacementNamed(context, '/auth');
@@ -129,22 +127,49 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       
       // Load data in parallel for better performance
       final results = await Future.wait([
-        _apiService.getProfile(),
         _loadGlucoseRecordsWithDebug(startOfDay, endOfDay),
         _apiService.getFoodEntries(startDate: startOfDay, endDate: endOfDay),
         _loadGlucoseStatsWithFallback(startOfDay, endOfDay),
       ], eagerError: false);
 
       final profile = await _apiService.getProfile();
-      final glucoseRecords = results[1] as List<dynamic>;
-      final foodEntries = results[2] as List<dynamic>;
-      final glucoseStats = results[3] as Map<String, dynamic>;
+      final glucoseRecords = results[0] as List<dynamic>;
+
+      final filteredRecords = glucoseRecords.where((record) {
+      try{
+      final timestamp = DateTime.parse(record['timestamp']).toLocal();
+      final isToday = timestamp.isAfter(startOfDay) && timestamp.isBefore(endOfDay);
+      final isRecent = DateTime.now().difference(timestamp).inHours<24;
+      return isToday ||isRecent;
+       } catch(e){
+          print('Error parsing timestamp for record: $e');
+          return false;
+      }}).toList();
+
+      filteredRecords.sort((a, b) {
+      final aTime = DateTime.parse(a['timestamp']);
+      final bTime = DateTime.parse(b['timestamp']);
+      return bTime.compareTo(aTime);
+       });
+
+      final foodEntries = results[1] as List<dynamic>;
+
+      final filteredFoodEntries = foodEntries.where((entry){
+      try {
+        final timestamp = DateTime.parse(entry['timestamp']).toLocal();
+        return timestamp.isAfter(startOfDay) && timestamp.isBefore(endOfDay);
+      } catch (e) {
+        return false;
+      }
+    }).toList();
+
+      final glucoseStats = results[2] as Map<String, dynamic>;
 
       if (mounted) {
         setState(() {
           _userProfile = profile;
-          _glucoseRecords = glucoseRecords;
-          _foodEntries = foodEntries;
+          _glucoseRecords = filteredRecords;
+          _foodEntries = filteredFoodEntries;
           _glucoseStats = glucoseStats;
           _isLoading = false;
           _hasError = false;
@@ -157,6 +182,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     } catch (e) {
       print('Error loading home data: $e');
       
+      print('Error details:');
+    print('  - Glucose records length: ${_glucoseRecords.length}');
+    if (_glucoseRecords.isNotEmpty) {
+      print('  - First record: ${_glucoseRecords.first}');
+    }
+    
       if (_apiService.cachedProfile != null) {
         if (mounted) {
           setState(() {
@@ -186,14 +217,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       
       print('📊 HomeScreen: Loaded ${records.length} total glucose records');
       
-      // Debug: Check sources
       final manualCount = records.where((r) => r['source'] == 'manual').length;
       final libreCount = records.where((r) => r['source'] == 'libre').length;
       final otherCount = records.length - manualCount - libreCount;
       
       print('📊 Sources - Manual: $manualCount, Libre: $libreCount, Other: $otherCount');
       
-      // Sort by timestamp (newest first)
       records.sort((a, b) {
         final aTime = DateTime.parse(a['timestamp']);
         final bTime = DateTime.parse(b['timestamp']);
@@ -235,7 +264,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Map<String, dynamic>? getLatestGlucoseReading(List<dynamic> records) {
     if (records.isEmpty) return null;
 
-    // Filter out invalid records
     final validRecords = records.where((record) {
       final glucose = record['glucose_level']?.toDouble();
       final timestamp = record['timestamp'];
@@ -244,7 +272,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     if (validRecords.isEmpty) return null;
 
-    // Sort by timestamp (newest first)
     validRecords.sort((a, b) {
       final aTime = DateTime.parse(a['timestamp']);
       final bTime = DateTime.parse(b['timestamp']);

@@ -49,7 +49,6 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
     super.initState();
     _initializeAnimations();
     _animationController.forward();
-    _loadGalleryImages();
   }
 
   void _initializeAnimations() {
@@ -167,14 +166,6 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
       print('Error opening gallery: $e');
       _showCustomSnackBar('Failed to open gallery: $e', isSuccess: false);
     }
-  }
-
-  // Select/deselect gallery image
-  void _toggleImageSelection(int index) {
-    setState(() {
-      _selectedImages[index] = !_selectedImages[index];
-      _selectedImageCount = _selectedImages.where((selected) => selected).length;
-    });
   }
 
   // Analyze selected gallery images
@@ -386,7 +377,6 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Mode selector
                           const SizedBox(height: 16),
                           
                 
