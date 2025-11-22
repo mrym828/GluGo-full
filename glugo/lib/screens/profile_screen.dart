@@ -559,7 +559,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
               IconButton(
                 onPressed: () {
                   HapticFeedback.lightImpact();
-                  Navigator.pushNamed(context, '/profile-setup').then((_) {
+                  Navigator.pushNamed(context, '/profileset').then((_) {
                     _loadUserProfile(); // Refresh after edit
                   });
                 },
@@ -644,23 +644,6 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
           padding: EdgeInsets.zero,
           child: Column(
             children: [
-              _ProfileSettingTile(
-                icon: Icons.person_rounded,
-                iconColor: AppTheme.primaryBlue,
-                title: 'Personal Information',
-                subtitle: _userProfile?['phone_number'] ?? 'No phone number',
-                trailing: Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppTheme.textTertiary,
-                  size: 20,
-                ),
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  Navigator.pushNamed(context, '/profile-setup').then((_) {
-                    _loadUserProfile(); // Refresh after edit
-                  });
-                },
-              ),
               _ProfileSettingTile(
                 icon: Icons.notifications_rounded,
                 iconColor: AppTheme.warningOrange,

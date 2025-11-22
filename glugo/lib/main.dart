@@ -13,6 +13,7 @@ import 'screens/food_analysis.dart';
 import 'screens/insights_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/device_details.dart';
+import 'screens/meals_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -58,6 +59,7 @@ class GlugoApp extends StatelessWidget {
         '/insights': (context) => const InsightsScreen(),
         '/profile': (context) => const ProfileScreen(),
         '/device': (context) => const DevicesDetailScreen(),
+        '/meals': (context) => const MealsScreen(),
       },
       builder: (context, child) {
         return MediaQuery(
@@ -87,7 +89,7 @@ class _NavigationWrapperState extends State<NavigationWrapper>
     const HomeScreen(),
     const GlucoseOverviewScreen(),
     const FoodScanPage(),
-    const InsightsScreen(),
+    const MealsScreen(),
     const ProfileScreen(),
   ];
 
@@ -176,7 +178,7 @@ class _NavigationWrapperState extends State<NavigationWrapper>
               _buildNavItem(Icons.home_rounded, 'Home', 0),
               _buildNavItem(Icons.trending_up_rounded, 'Glucose', 1),
               _buildNavItem(Icons.qr_code_scanner_rounded, 'Scan', 2),
-              _buildNavItem(Icons.insights_rounded, 'Insights', 3),
+              _buildNavItem(Icons.restaurant_menu_rounded, 'meals', 3),
               _buildNavItem(Icons.person_rounded, 'Profile', 4),
             ],
           ),

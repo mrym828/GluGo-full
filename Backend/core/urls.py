@@ -6,7 +6,9 @@ from core.services.api import FoodEntryViewSet, GlucoseRecordViewSet
 from core.services.api import (
     HealthSyncView, LibreConnectView, LibreWebhookView, InsulinCalculateView,
     LibreOAuthStartView, LibreOAuthCallbackView, LibrePasswordLoginView,
-    OpenAIAnalyzeImageView, csrf_token_view, LibreSyncNowView, GlucoseStatisticsView,LibreDisconnectView,LibreConnectionStatusView
+    OpenAIAnalyzeImageView, csrf_token_view, LibreSyncNowView, GlucoseStatisticsView,
+    LibreDisconnectView,LibreConnectionStatusView, GlucosePredictionView,
+    PredictionStatusView, MealGlucosePredictionView,
 )
 from core.views import FoodEntryListCreateView, FoodEntryDetailView
 
@@ -35,5 +37,7 @@ urlpatterns = [
     path('glucose-statistics/', GlucoseStatisticsView.as_view(), name='glucose-statistics'),
     path('food/entries/', FoodEntryListCreateView.as_view(), name='food-entry-list-create'),
     path('food/entries/<uuid:pk>/', FoodEntryDetailView.as_view(), name='food-entry-detail'),
-
+    path('glucose/predict/', GlucosePredictionView.as_view(), name='glucose-predict'),
+    path('glucose/predict-meal/', MealGlucosePredictionView.as_view(), name='meal-glucose-predict'),
+    path('glucose/predict-status/', PredictionStatusView.as_view(), name='prediction-status'),
 ]

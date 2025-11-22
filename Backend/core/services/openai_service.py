@@ -27,6 +27,8 @@ class OpenAIImageResponse(BaseModel):
     total_carbs_g: float
     confidence: Optional[float] = None
     calories_estimate: Optional[float] = None
+    total_protein_g: float
+    total_fat_g: float
 
 
 # Custom exceptions for OpenAI service errors
@@ -152,7 +154,10 @@ def analyze_image(image_bytes: bytes, user_id: Optional[int] = None, request_id:
         '  "components": [ { "name": string, "carbs_g": number } ],\n'
         '  "total_carbs_g": number,\n'
         '  "confidence": number (0-1, optional),\n'
-        '  "calories_estimate": number (optional)\n'
+        '  "calories_estimate": number,\n'
+        '  "total_protein_g": number,\n'
+        '  "total_fat_g:" number,\n'
+        
         "}\n"
         "All numbers must be plain numbers (not strings). Use grams for carbs. "
         "Ensure total_carbs_g equals the sum of all component carbs."

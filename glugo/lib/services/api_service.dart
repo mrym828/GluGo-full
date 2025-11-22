@@ -516,6 +516,9 @@ class ApiService {
   File? imageFile,
   Map<String, dynamic>? nutritionalInfo,
   double? totalCarbsG,
+  double? totalProteinG,
+  double? totalFatG,
+  double? totalCal,
 }) async {
   try {
     await init();
@@ -540,9 +543,21 @@ class ApiService {
     request.fields['meal_type'] = mealType;
     
     if (totalCarbsG != null) {
-      request.fields['total_carbs_g'] = totalCarbsG.toString();
+      request.fields['total_carbs'] = totalCarbsG.toString();
     }
-    
+
+    if(totalProteinG != null){
+      request.fields['total_protein'] = totalProteinG.toString();
+    }
+
+    if(totalFatG != null){
+      request.fields['total_fat'] = totalFatG.toString();
+    }
+
+    if(totalCal != null){
+      request.fields['total_calories'] = totalCal.toString();
+    }
+
     if (nutritionalInfo != null) {
       request.fields['nutritional_info'] = json.encode(nutritionalInfo);
     }
@@ -811,6 +826,138 @@ class ApiService {
       rethrow;
     }
   }
+  Future<Map<String, dynamic>?> predictGlucoseAfterMeal({
+    required double carbs,
+    double insulin = 0,
+    String model = 'ensemble',
+    int lookback = 240,
+  }) async {
+    try {
+      if (_accessToken == null) {
+        throw Exception('Not authenticated. Please log in.');
+      }
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/glucose/predict-meal/'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_accessToken',
+        },
+        body: json.encode({
+          'carbs': carbs,
+          'insulin': insulin,
+          'model': model,
+          'lookback': lookback,
+        }),
+      ).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw Exception('Prediction request timed out');
+        },
+      );
+
+      print('Meal prediction response status: ${response.statusCode}');
+      print('Meal prediction response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data;
+      } else if (response.statusCode == 400) {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Invalid request');
+      } else if (response.statusCode == 401) {
+        // Try to refresh token
+        final refreshed = await refreshAccessToken();
+        if (refreshed) {
+          // Retry the request
+          return await predictGlucoseAfterMeal(
+            carbs: carbs,
+            insulin: insulin,
+            model: model,
+            lookback: lookback,
+          );
+        }
+        throw Exception('Authentication failed');
+      } else {
+        throw Exception('Failed to get prediction: ${response.statusCode}');
+      }
+    } on SocketException {
+      throw Exception('No internet connection');
+    } on HttpException {
+      throw Exception('Could not connect to server');
+    } catch (e) {
+      print('Prediction error: $e');
+      rethrow;
+    }
+  }
+
+  /// Get regular glucose prediction (without meal)
+  Future<Map<String, dynamic>?> predictGlucose({
+    String model = 'ensemble',
+    int lookback = 240,
+  }) async {
+    try {
+      if (_accessToken == null) {
+        throw Exception('Not authenticated. Please log in.');
+      }
+
+      final response = await http.get(
+        Uri.parse('$baseUrl/glucose/predict/?model=$model&lookback=$lookback'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_accessToken',
+        },
+      ).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw Exception('Prediction request timed out');
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data;
+      } else if (response.statusCode == 401) {
+        final refreshed = await refreshAccessToken();
+        if (refreshed) {
+          return await predictGlucose(model: model, lookback: lookback);
+        }
+        throw Exception('Authentication failed');
+      } else {
+        throw Exception('Failed to get prediction');
+      }
+    } catch (e) {
+      print('Prediction error: $e');
+      rethrow;
+    }
+  }
+
+  /// Check prediction service status
+  Future<Map<String, dynamic>?> getPredictionServiceStatus() async {
+    try {
+      if (_accessToken == null) {
+        throw Exception('Not authenticated');
+      }
+
+      final response = await http.get(
+        Uri.parse('$baseUrl/core/glucose/predict-status/'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_accessToken',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return null;
+    } catch (e) {
+      print('Status check error: $e');
+      return null;
+    }
+  }
+
+
 
   // ==================== HELPER METHODS ====================
 
