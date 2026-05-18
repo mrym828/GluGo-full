@@ -1,6 +1,6 @@
-**GluGo – Manage Glucose On-The-Go**
+GluGo — Manage Glucose On-The-Go
+<p align="center"> <img src="assets/banner.png" alt="GluGo Banner" width="100%"> </p> <p align="center"> <img src="https://img.shields.io/badge/Flutter-Mobile_App-02569B?logo=flutter" /> <img src="https://img.shields.io/badge/Django-Backend-092E20?logo=django" /> <img src="https://img.shields.io/badge/Python-ML_&_API-3776AB?logo=python" /> <img src="https://img.shields.io/badge/OpenAI-Vision_API-412991?logo=openai" /> <img src="https://img.shields.io/badge/Status-Completed-success" /> <img src="https://img.shields.io/badge/License-Academic_Project-blue" /> </p> <p align="center"> AI-powered diabetes management application combining glucose prediction, meal analysis, insulin recommendation, and real-time health monitoring. </p>
 
-GluGo is an AI-powered diabetes management application designed to help users monitor glucose levels, analyze meals, estimate insulin doses, and predict future glucose trends.
 Demo Video link: https://youtube.com/shorts/DbtHsK2bgwQ?si=hkENzXd00yFhDB-T 
 
 The system combines:
