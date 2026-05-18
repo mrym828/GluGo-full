@@ -4,7 +4,6 @@
 GluGo is a smart healthcare system developed to help people with diabetes better understand and manage their glucose levels. Demo Video link: https://youtube.com/shorts/DbtHsK2bgwQ?si=hkENzXd00yFhDB-T 
 
 The system combines:
-
 Mobile application development
 Backend REST APIs
 Machine learning glucose prediction models
