@@ -1,6 +1,7 @@
-GluGo – Manage Glucose On-The-Go
+**GluGo – Manage Glucose On-The-Go**
 
 GluGo is an AI-powered diabetes management application designed to help users monitor glucose levels, analyze meals, estimate insulin doses, and predict future glucose trends.
+Demo Video link: https://youtube.com/shorts/DbtHsK2bgwQ?si=hkENzXd00yFhDB-T 
 
 The system combines:
 
@@ -97,3 +98,6 @@ Parkes Error Grid
 Best clinical safety achieved:
 
 98%+ clinically acceptable predictions
+
+**License**
+This project was developed for academic purposes as a senior graduation project at the University of Sharjah.
