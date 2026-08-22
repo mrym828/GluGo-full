@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:glugo/screens/recent_activity_page.dart';
 import '../utils/theme.dart';
 import '../widgets/shared_components.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'log_reading_page.dart';
 import '../services/api_service.dart';
+import '../utils/glucose_utils.dart';
+
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,8 +29,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   List<dynamic> _glucoseRecords = [];
   List<dynamic> _foodEntries = [];
   Map<String, dynamic>? _glucoseStats;
-  bool _showLibreBanner = false;
+  final bool _showLibreBanner = false;
   Map<String, dynamic>? _libreStatus;
+  
+  // Quick prediction data
+  Map<String, dynamic>? _quickPrediction;
+  bool _predictionLoading = false;
 
   @override
   void initState() {
@@ -177,6 +184,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         
         // Debug logging
         _debugDataState();
+        
+        // Load quick prediction after successful data load
+        _loadQuickPrediction();
       }
 
     } catch (e) {
@@ -203,6 +213,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             _hasError = true;
           });
         }
+      }
+    }
+  }
+
+  Future<void> _loadQuickPrediction() async {
+    setState(() {
+      _predictionLoading = true;
+    });
+    
+    try {
+      final prediction = await _apiService.getQuickGlucosePrediction();
+      
+      if (mounted && prediction != null && prediction['success'] == true) {
+        setState(() {
+          _quickPrediction = prediction;
+          _predictionLoading = false;
+        });
+      } else {
+        setState(() {
+          _quickPrediction = null;
+          _predictionLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Error loading quick prediction: $e');
+      if (mounted) {
+        setState(() {
+          _quickPrediction = null;
+          _predictionLoading = false;
+        });
       }
     }
   }
@@ -259,29 +299,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final latest = _glucoseRecords.first;
       print('  - Latest reading: ${latest['glucose_level']} mg/dL at ${latest['timestamp']} (source: ${latest['source']})');
     }
-  }
-
-  Map<String, dynamic>? getLatestGlucoseReading(List<dynamic> records) {
-    if (records.isEmpty) return null;
-
-    final validRecords = records.where((record) {
-      final glucose = record['glucose_level']?.toDouble();
-      final timestamp = record['timestamp'];
-      return glucose != null && glucose > 0 && timestamp != null;
-    }).toList();
-
-    if (validRecords.isEmpty) return null;
-
-    validRecords.sort((a, b) {
-      final aTime = DateTime.parse(a['timestamp']);
-      final bTime = DateTime.parse(b['timestamp']);
-      return bTime.compareTo(aTime);
-    });
-
-    final latest = validRecords.first;
-    print('🔍 Latest reading: ${latest['glucose_level']} mg/dL (source: ${latest['source']})');
-    
-    return latest;
   }
 
   @override
@@ -460,6 +477,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     variability: _glucoseStats?['coefficient_of_variation'] is num
                         ? (_glucoseStats!['coefficient_of_variation'] as num).toInt()
                         : 0,
+                  ),
+                  const SizedBox(height: AppTheme.spacingXL),
+                  _QuickPredictionSection(
+                    prediction: _quickPrediction,
+                    isLoading: _predictionLoading,
+                    onRefresh: _loadQuickPrediction,
                   ),
                   const SizedBox(height: AppTheme.spacingXL),
                   _QuickActionsSection(onShowSnackBar: _showSnackBar, onRefreshData: _loadData),
@@ -1075,8 +1098,10 @@ class _RecentActivitySection extends StatelessWidget {
         SectionHeader(
           title: 'Recent Activity',
           action: TextButton.icon(
-            onPressed: () => Navigator.pushNamed(context, '/glucose-overview'),
-            label: const Text('View All'),
+          onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const RecentActivityPage()),
+              ),            label: const Text('View All'),
             icon: const Icon(Icons.arrow_forward_rounded, size: 16),
             style: TextButton.styleFrom(
               foregroundColor: AppTheme.primaryBlue,
@@ -1244,5 +1269,324 @@ class _RecentActivitySection extends StatelessWidget {
     }
 
     return activities;
+  }
+}
+
+// Quick Prediction Section - Shows ML-based glucose prediction
+class _QuickPredictionSection extends StatelessWidget {
+  final Map<String, dynamic>? prediction;
+  final bool isLoading;
+  final VoidCallback onRefresh;
+
+  const _QuickPredictionSection({
+    required this.prediction,
+    required this.isLoading,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          title: 'Glucose Forecast',
+          subtitle: 'AI prediction for next 30 minutes',
+          action: IconButton(
+            onPressed: onRefresh,
+            icon: Icon(
+              isLoading ? Icons.hourglass_empty : Icons.refresh,
+              size: 20,
+              color: AppTheme.primaryBlue,
+            ),
+            tooltip: 'Refresh prediction',
+          ),
+        ),
+        const SizedBox(height: AppTheme.spacingS),
+        BaseCard(
+          child: isLoading
+              ? _buildLoadingState()
+              : prediction != null && prediction!['success'] == true
+                  ? _buildPredictionContent()
+                  : _buildErrorState(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return Padding(
+      padding: const EdgeInsets.all(AppTheme.spacingXL),
+      child: Column(
+        children: [
+          CircularProgressIndicator(
+            color: AppTheme.primaryBlue,
+            strokeWidth: 2,
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          Text(
+            'Analyzing glucose patterns...',
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Padding(
+      padding: const EdgeInsets.all(AppTheme.spacingXL),
+      child: Column(
+        children: [
+          Icon(
+            Icons.info_outline,
+            size: 48,
+            color: AppTheme.textSecondary.withOpacity(0.5),
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          Text(
+            'Prediction Unavailable',
+            style: AppTheme.titleSmall.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: AppTheme.spacingS),
+          Text(
+            'Need more glucose readings for accurate predictions',
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textSecondary,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPredictionContent() {
+    final pred = prediction!['prediction'];
+    final currentGlucose = (pred['current_glucose'] ?? 0).toDouble();
+    final predictedGlucose = (pred['glucose_mg_dl'] ?? 0).toDouble();
+    final change = (pred['change'] ?? 0).toDouble();
+    final trend = pred['trend'] ?? 'stable';
+    final riskAssessment = pred['risk_assessment'];
+    
+    // Get trend info
+    IconData trendIcon;
+    Color trendColor;
+    String trendText;
+    
+    switch (trend) {
+      case 'rising':
+        trendIcon = Icons.trending_up;
+        trendColor = AppTheme.warningOrange;
+        trendText = 'Rising';
+        break;
+      case 'falling':
+        trendIcon = Icons.trending_down;
+        trendColor = AppTheme.primaryBlue;
+        trendText = 'Falling';
+        break;
+      default:
+        trendIcon = Icons.trending_flat;
+        trendColor = AppTheme.successGreen;
+        trendText = 'Stable';
+    }
+
+    return Column(
+      children: [
+        // Main prediction display
+        Container(
+          padding: const EdgeInsets.all(AppTheme.spacingL),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                AppTheme.primaryBlue.withOpacity(0.05),
+                AppTheme.primaryBlue.withOpacity(0.02),
+              ],
+            ),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(12),
+              topRight: Radius.circular(12),
+            ),
+          ),
+          child: Row(
+            children: [
+              // Current glucose
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Current',
+                      style: AppTheme.bodySmall.copyWith(
+                        color: AppTheme.textSecondary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${currentGlucose.toInt()}',
+                      style: AppTheme.displaySmall.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.getGlucoseColor(currentGlucose),
+                      ),
+                    ),
+                    Text(
+                      'mg/dL',
+                      style: AppTheme.bodySmall.copyWith(
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              // Arrow and trend
+              Container(
+                padding: const EdgeInsets.all(AppTheme.spacingM),
+                decoration: BoxDecoration(
+                  color: trendColor.withOpacity(0.1),
+                  borderRadius: AppTheme.radiusS,
+                ),
+                child: Column(
+                  children: [
+                    Icon(
+                      trendIcon,
+                      color: trendColor,
+                      size: 24,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      change > 0 ? '+${change.toInt()}' : '${change.toInt()}',
+                      style: AppTheme.bodySmall.copyWith(
+                        color: trendColor,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              const SizedBox(width: AppTheme.spacingM),
+              
+              // Predicted glucose
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      'In 30 min',
+                      style: AppTheme.bodySmall.copyWith(
+                        color: AppTheme.textSecondary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${predictedGlucose.toInt()}',
+                      style: AppTheme.displaySmall.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.getGlucoseColor(predictedGlucose),
+                      ),
+                    ),
+                    Text(
+                      'mg/dL',
+                      style: AppTheme.bodySmall.copyWith(
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        // Risk assessment
+        if (riskAssessment != null)
+          Container(
+            padding: const EdgeInsets.all(AppTheme.spacingM),
+            decoration: BoxDecoration(
+              color: _getRiskColor(riskAssessment['level']).withOpacity(0.1),
+              border: Border(
+                top: BorderSide(
+                  color: _getRiskColor(riskAssessment['level']).withOpacity(0.2),
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  _getRiskIcon(riskAssessment['level']),
+                  color: _getRiskColor(riskAssessment['level']),
+                  size: 16,
+                ),
+                const SizedBox(width: AppTheme.spacingS),
+                Expanded(
+                  child: Text(
+                    riskAssessment['message'] ?? 'Prediction available',
+                    style: AppTheme.bodySmall.copyWith(
+                      color: _getRiskColor(riskAssessment['level']),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        
+        // Model info
+        Padding(
+          padding: const EdgeInsets.all(AppTheme.spacingM),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.psychology_outlined,
+                size: 14,
+                color: AppTheme.textSecondary,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                'ML-powered prediction based on your patterns',
+                style: AppTheme.bodySmall.copyWith(
+                  color: AppTheme.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Color _getRiskColor(String? level) {
+    switch (level) {
+      case 'high':
+        return AppTheme.warningOrange;
+      case 'low':
+        return AppTheme.dangerRed;
+      case 'extreme':
+        return AppTheme.dangerRed;
+      default:
+        return AppTheme.successGreen;
+    }
+  }
+
+  IconData _getRiskIcon(String? level) {
+    switch (level) {
+      case 'high':
+      case 'low':
+        return Icons.warning_amber_rounded;
+      case 'extreme':
+        return Icons.error_rounded;
+      default:
+        return Icons.check_circle_rounded;
+    }
   }
 }

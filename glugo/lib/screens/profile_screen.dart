@@ -22,13 +22,103 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
   Map<String, dynamic>? _userProfile;
   String? _errorMessage;
 
+  bool _isEditingProfile = false;
+  final TextEditingController _fullNameController = TextEditingController();
+  final TextEditingController _ageController = TextEditingController();
+  final TextEditingController _weightController = TextEditingController();
+  String? _selectedGender;
+  String? _selectedDiabetesType;
+
+  final bool _isEditingTargetRange = false;
+  final TextEditingController _targetMinController = TextEditingController();
+  final TextEditingController _targetMaxController = TextEditingController();
+
+
   @override
   void initState() {
     super.initState();
     _initializeAnimations();
     _animationController.forward();
     _loadUserProfile();
+
+    _fullNameController.addListener(() {});
+    _ageController.addListener(() {});
+    _weightController.addListener(() {});
+    _targetMinController.addListener(() {});
+    _targetMaxController.addListener(() {});
   }
+
+  void _toggleEditProfile() {
+    if (_isEditingProfile) {
+      // Cancel editing
+      _isEditingProfile = false;
+      _clearControllers();
+    } else {
+      // Start editing - populate controllers with current data
+      _isEditingProfile = true;
+      _populateControllers();
+    }
+    setState(() {});
+  }
+
+  void _populateControllers() {
+  _fullNameController.text = _userProfile?['full_name'] ?? '';
+  _ageController.text = _userProfile?['age']?.toString() ?? '';
+  _weightController.text = _userProfile?['weight_kg']?.toString() ?? '';
+  _selectedGender = _userProfile?['gender'] ?? 'M';
+  _selectedDiabetesType = _userProfile?['diabetes_type'] ?? 'T1';
+}
+
+void _clearControllers() {
+  _fullNameController.clear();
+  _ageController.clear();
+  _weightController.clear();
+  _selectedGender = null;
+  _selectedDiabetesType = null;
+}
+
+Future<void> _saveProfileChanges() async {
+  try {
+    setState(() {
+      _isLoading = true;
+    });
+
+    final updateData = {
+      'full_name': _fullNameController.text.trim(),
+      if (_ageController.text.isNotEmpty) 'age': int.tryParse(_ageController.text),
+      if (_weightController.text.isNotEmpty) 'weight_kg': double.tryParse(_weightController.text),
+      if (_selectedGender != null) 'gender': _selectedGender,
+      if (_selectedDiabetesType != null) 'diabetes_type': _selectedDiabetesType,
+    };
+
+    updateData.removeWhere((key, value) => value == null);
+
+    await _apiService.updateProfile(updateData);
+    
+    // Refresh profile data
+    await _loadUserProfile();
+    
+    // Exit edit mode
+    _isEditingProfile = false;
+    _clearControllers();
+    
+    if (mounted) {
+      _showSnackBar('Profile updated successfully');
+    }
+  } catch (e) {
+    print('Error updating profile: $e');
+    if (mounted) {
+      _showSnackBar('Failed to update profile', isSuccess: false);
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+}
+
 
   void _initializeAnimations() {
     _animationController = AnimationController(
@@ -153,6 +243,9 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
   @override
   void dispose() {
     _animationController.dispose();
+    _fullNameController.dispose();
+    _ageController.dispose();
+    _weightController.dispose();
     super.dispose();
   }
 
@@ -377,16 +470,222 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
     return 'Not Set';
   }
 
-  /// Calculate days since diagnosis
-  int _getDaysActive() {
-    if (_userProfile == null || _userProfile!['diagnoses_year'] == null) {
-      return 0;
-    }
-    final diagnosisYear = _userProfile!['diagnoses_year'] as int;
-    final now = DateTime.now();
-    final diagnosisDate = DateTime(diagnosisYear, 1, 1);
-    return now.difference(diagnosisDate).inDays;
+  void _showEditCarbRatioDialog(){
+    final currentRatio = _userProfile?['insulin_to_carb_ratio']?.toString()??'';
+    final TextEditingController controller = TextEditingController(text: currentRatio);
+
+    showDialog(
+      context: context, 
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: AppTheme.radiusL),
+        title: Row(children: [
+          Icon(Icons.insights_rounded, color: AppTheme.primaryBlue),
+          const SizedBox(width: AppTheme.spacingM),
+          const Text('Edit Insulin to Carb Ratio'),
+        ],),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Enter your insulin to carb ratio: ', style: AppTheme.bodyMedium,),
+            const SizedBox(height: AppTheme.spacingM),
+            TextField(
+              controller: controller,
+            decoration: InputDecoration(
+              labelText: 'Units per 15g carbs',
+              hintText: 'e.g., 1.5',
+              border: OutlineInputBorder(
+                borderRadius: AppTheme.radiusM,
+                borderSide: BorderSide(color: AppTheme.borderLight),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: AppTheme.radiusM,
+                borderSide: BorderSide(color: AppTheme.primaryBlue),
+              ),
+            ),
+            keyboardType: TextInputType.numberWithOptions(decimal: true),
+            textInputAction: TextInputAction.done,
+            ),
+            const SizedBox(height: AppTheme.spacingS),
+          Text(
+            'Example: 1 unit of insulin for every 15g of carbs',
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          ],
+        ), actions: [
+          TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+          onPressed: () async {
+            final newRatio = controller.text.trim();
+            if (newRatio.isNotEmpty) {
+              Navigator.pop(context);
+              await _updateCarbRatio(double.tryParse(newRatio));
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.primaryBlue,
+          ),
+          child: const Text('Save'),
+          ),
+        ],
+        ),
+      );
   }
+
+  void _showEditCorrectionFactorDialog() {
+  final currentFactor = _userProfile?['correction_factor']?.toString() ?? '';
+  final TextEditingController controller = TextEditingController(text: currentFactor);
+  
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: AppTheme.radiusL),
+      title: Row(
+        children: [
+          Icon(Icons.trending_down_rounded, color: AppTheme.primaryBlue),
+          const SizedBox(width: AppTheme.spacingM),
+          const Text('Edit Correction Factor'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Enter your correction factor:',
+            style: AppTheme.bodyMedium,
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          TextField(
+            controller: controller,
+            decoration: InputDecoration(
+              labelText: 'Points per unit',
+              hintText: 'e.g., 50',
+              border: OutlineInputBorder(
+                borderRadius: AppTheme.radiusM,
+                borderSide: BorderSide(color: AppTheme.borderLight),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: AppTheme.radiusM,
+                borderSide: BorderSide(color: AppTheme.primaryBlue),
+              ),
+            ),
+            keyboardType: TextInputType.numberWithOptions(decimal: true),
+            textInputAction: TextInputAction.done,
+          ),
+          const SizedBox(height: AppTheme.spacingS),
+          Text(
+            'Example: 1 unit lowers glucose by 50 mg/dL',
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textSecondary,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            final newFactor = controller.text.trim();
+            if (newFactor.isNotEmpty) {
+              Navigator.pop(context);
+              await _updateCorrectionFactor(double.tryParse(newFactor));
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.primaryBlue,
+          ),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Update carb ratio via API
+Future<void> _updateCarbRatio(double? newRatio) async {
+  if (newRatio == null) return;
+  
+  try {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    await _apiService.updateProfile({
+      'insulin_to_carb_ratio': newRatio,
+    });
+    
+    // Refresh profile data
+    await _loadUserProfile();
+    
+    if (mounted) {
+      _showSnackBar('Insulin to carb ratio updated successfully');
+    }
+  } catch (e) {
+    print('Error updating carb ratio: $e');
+    if (mounted) {
+      _showSnackBar('Failed to update ratio', isSuccess: false);
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+}
+
+/// Update correction factor via API
+Future<void> _updateCorrectionFactor(double? newFactor) async {
+  if (newFactor == null) return;
+  
+  try {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    await _apiService.updateProfile({
+      'correction_factor': newFactor,
+    });
+    
+    // Refresh profile data
+    await _loadUserProfile();
+    
+    if (mounted) {
+      _showSnackBar('Correction factor updated successfully');
+    }
+  } catch (e) {
+    print('Error updating correction factor: $e');
+    if (mounted) {
+      _showSnackBar('Failed to update correction factor', isSuccess: false);
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+}
+
+double _getYearsSinceDiagnosis() {
+  if (_userProfile == null || _userProfile!['diagnoses_year'] == null) {
+    return 0;
+  }
+  final diagnosisYear = _userProfile!['diagnoses_year'] as int;
+  final now = DateTime.now();
+  final diagnosisDate = DateTime(diagnosisYear, 1, 1);
+  final days = now.difference(diagnosisDate).inDays;
+  return (days / 365.25); 
+}
 
   @override
   Widget build(BuildContext context) {
@@ -475,54 +774,55 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
   }
 
   Widget _buildUserProfileCard() {
-    final fullName = _userProfile?['full_name'] ?? 'User';
-    final email = _userProfile?['email'] ?? 'No email';
-    final username = _userProfile?['username'] ?? 'username';
-    final diabetesType = _getDiabetesTypeDisplay();
-    
-    return BaseCard(
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: AppTheme.primaryBlue,
-                    width: 2,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppTheme.primaryBlue.withOpacity(0.2),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+  final fullName = _userProfile?['full_name'] ?? 'User';
+  final email = _userProfile?['email'] ?? 'No email';
+  final username = _userProfile?['username'] ?? 'username';
+  final diabetesType = _getDiabetesTypeDisplay();
+  
+  return BaseCard(
+    child: Column(
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: AppTheme.primaryBlue,
+                  width: 2,
                 ),
-                child: ClipOval(
-                  child: Container(
-                    color: AppTheme.primaryBlue.withOpacity(0.1),
-                    child: Center(
-                      child: Text(
-                        fullName.isNotEmpty ? fullName[0].toUpperCase() : 'U',
-                        style: AppTheme.headlineMedium.copyWith(
-                          color: AppTheme.primaryBlue,
-                          fontWeight: FontWeight.bold,
-                        ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppTheme.primaryBlue.withOpacity(0.2),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: ClipOval(
+                child: Container(
+                  color: AppTheme.primaryBlue.withOpacity(0.1),
+                  child: Center(
+                    child: Text(
+                      fullName.isNotEmpty ? fullName[0].toUpperCase() : 'U',
+                      style: AppTheme.headlineMedium.copyWith(
+                        color: AppTheme.primaryBlue,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: AppTheme.spacingL),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+            ),
+            const SizedBox(width: AppTheme.spacingL),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (!_isEditingProfile) ...[
                     Text(
                       fullName.isNotEmpty ? fullName : username,
                       style: AppTheme.titleLarge.copyWith(
@@ -553,81 +853,249 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                           ),
                       ],
                     ),
+                  ] else ...[
+                    // Edit mode - Name field
+                    TextField(
+                      controller: _fullNameController,
+                      decoration: InputDecoration(
+                        labelText: 'Full Name',
+                        hintText: 'Enter your full name',
+                        border: OutlineInputBorder(
+                          borderRadius: AppTheme.radiusS,
+                          borderSide: BorderSide(color: AppTheme.borderLight),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: AppTheme.radiusS,
+                          borderSide: BorderSide(color: AppTheme.primaryBlue),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: AppTheme.spacingM,
+                          vertical: AppTheme.spacingS,
+                        ),
+                      ),
+                      style: AppTheme.titleSmall,
+                    ),
                   ],
-                ),
+                ],
               ),
-              IconButton(
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  Navigator.pushNamed(context, '/profileset').then((_) {
-                    _loadUserProfile(); // Refresh after edit
-                  });
-                },
-                icon: Container(
-                  padding: const EdgeInsets.all(AppTheme.spacingS),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primaryBlue.withOpacity(0.1),
-                    borderRadius: AppTheme.radiusS,
+            ),
+            // Edit/Save/Cancel button
+            _isEditingProfile
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        onPressed: _saveProfileChanges,
+                        icon: Container(
+                          padding: const EdgeInsets.all(AppTheme.spacingS),
+                          decoration: BoxDecoration(
+                            color: AppTheme.successGreen.withOpacity(0.1),
+                            borderRadius: AppTheme.radiusS,
+                          ),
+                          child: Icon(
+                            Icons.check_rounded,
+                            color: AppTheme.successGreen,
+                            size: 18,
+                          ),
+                        ),
+                        tooltip: 'Save changes',
+                      ),
+                      IconButton(
+                        onPressed: _toggleEditProfile,
+                        icon: Container(
+                          padding: const EdgeInsets.all(AppTheme.spacingS),
+                          decoration: BoxDecoration(
+                            color: AppTheme.errorRed.withOpacity(0.1),
+                            borderRadius: AppTheme.radiusS,
+                          ),
+                          child: Icon(
+                            Icons.close_rounded,
+                            color: AppTheme.errorRed,
+                            size: 18,
+                          ),
+                        ),
+                        tooltip: 'Cancel',
+                      ),
+                    ],
+                  )
+                : IconButton(
+                    onPressed: () {
+                      HapticFeedback.lightImpact();
+                      _toggleEditProfile();
+                    },
+                    icon: Container(
+                      padding: const EdgeInsets.all(AppTheme.spacingS),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryBlue.withOpacity(0.1),
+                        borderRadius: AppTheme.radiusS,
+                      ),
+                      child: Icon(
+                        Icons.edit_rounded,
+                        color: AppTheme.primaryBlue,
+                        size: 18,
+                      ),
+                    ),
+                    tooltip: 'Edit profile',
                   ),
-                  child: Icon(
-                    Icons.edit_rounded,
-                    color: AppTheme.primaryBlue,
-                    size: 18,
-                  ),
-                ),
-              ),
-            ],
-          ),
+          ],
+        ),
+        
+        // Edit mode fields
+        if (_isEditingProfile) ...[
           const SizedBox(height: AppTheme.spacingL),
-          Divider(
-            color: AppTheme.borderLight,
-            height: 1,
-          ),
-          const SizedBox(height: AppTheme.spacingL),
-          Row(
-            children: [
-              Expanded(
-                child: _ProfileStatItem(
-                  label: 'Days Active',
-                  value: _getDaysActive().toString(),
-                  icon: Icons.calendar_today_rounded,
-                  color: AppTheme.primaryBlue,
-                ),
+          _buildEditFields(),
+        ],
+        
+        const SizedBox(height: AppTheme.spacingL),
+        Divider(
+          color: AppTheme.borderLight,
+          height: 1,
+        ),
+        const SizedBox(height: AppTheme.spacingL),
+        Row(
+          children: [
+            Expanded(
+              child: _ProfileStatItem(
+                label: 'Years with Diabetes',
+                value: _getYearsSinceDiagnosis() > 0 
+                    ? _getYearsSinceDiagnosis().toStringAsFixed(1)
+                    : '--',
+                icon: Icons.medical_services_rounded,
+                color: AppTheme.primaryBlue,
               ),
-              Container(
-                width: 1,
-                height: 48,
-                color: AppTheme.borderLight,
-              ),
-              Expanded(
-                child: _ProfileStatItem(
-                  label: 'Age',
-                  value: _userProfile?['age']?.toString() ?? '--',
-                  icon: Icons.cake_rounded,
-                  color: AppTheme.successGreen,
-                ),
-              ),
-              Container(
-                width: 1,
-                height: 48,
-                color: AppTheme.borderLight,
-              ),
-              Expanded(
-                child: _ProfileStatItem(
-                  label: 'Weight',
-                  value: _userProfile?['weight_kg'] != null 
-                      ? '${_userProfile!['weight_kg']} kg' 
-                      : '--',
-                  icon: Icons.monitor_weight_rounded,
-                  color: AppTheme.mealColor,
-                ),
-              ),
-            ],
-          ),
+            ),
+            Container(
+              width: 1,
+              height: 48,
+              color: AppTheme.borderLight,
+            ),
+            Expanded(
+              child: _isEditingProfile
+                  ? _EditableStatItem(
+                      controller: _ageController,
+                      label: 'Age',
+                      icon: Icons.cake_rounded,
+                      color: AppTheme.successGreen,
+                      inputType: TextInputType.number,
+                    )
+                  : _ProfileStatItem(
+                      label: 'Age',
+                      value: _userProfile?['age']?.toString() ?? '--',
+                      icon: Icons.cake_rounded,
+                      color: AppTheme.successGreen,
+                    ),
+            ),
+            Container(
+              width: 1,
+              height: 48,
+              color: AppTheme.borderLight,
+            ),
+            Expanded(
+              child: _isEditingProfile
+                  ? _EditableStatItem(
+                      controller: _weightController,
+                      label: 'Weight',
+                      icon: Icons.monitor_weight_rounded,
+                      color: AppTheme.mealColor,
+                      inputType: TextInputType.numberWithOptions(decimal: true),
+                      suffix: 'kg',
+                    )
+                  : _ProfileStatItem(
+                      label: 'Weight',
+                      value: _userProfile?['weight_kg'] != null 
+                          ? '${_userProfile!['weight_kg']} kg' 
+                          : '--',
+                      icon: Icons.monitor_weight_rounded,
+                      color: AppTheme.mealColor,
+                    ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _buildEditFields() {
+  return Column(
+    children: [
+      // Diabetes Type Selector
+      Row(
+        children: [
+          Icon(Icons.favorite_rounded, color: AppTheme.primaryBlue, size: 16),
+          const SizedBox(width: AppTheme.spacingM),
+          Text('Diabetes Type:', style: AppTheme.titleSmall),
+          const Spacer(),
+          _buildDiabetesTypeSelector(),
         ],
       ),
-    );
-  }
+      const SizedBox(height: AppTheme.spacingM),
+      
+      // Gender Selector
+      Row(
+        children: [
+          Icon(Icons.person_rounded, color: AppTheme.successGreen, size: 16),
+          const SizedBox(width: AppTheme.spacingM),
+          Text('Gender:', style: AppTheme.titleSmall),
+          const Spacer(),
+          _buildGenderSelector(),
+        ],
+      ),
+    ],
+  );
+}
+
+Widget _buildDiabetesTypeSelector() {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacingM),
+    decoration: BoxDecoration(
+      color: AppTheme.primaryBlue.withOpacity(0.1),
+      borderRadius: AppTheme.radiusM,
+    ),
+    child: DropdownButton<String>(
+      value: _selectedDiabetesType,
+      onChanged: (String? newValue) {
+        setState(() {
+          _selectedDiabetesType = newValue;
+        });
+      },
+      items: const [
+        DropdownMenuItem(value: 'T1', child: Text('Type 1')),
+        DropdownMenuItem(value: 'T2', child: Text('Type 2')),
+      ],
+      underline: const SizedBox(),
+      icon: Icon(Icons.arrow_drop_down_rounded, color: AppTheme.primaryBlue),
+      dropdownColor: Colors.white,
+      borderRadius: AppTheme.radiusM,
+    ),
+  );
+}
+
+Widget _buildGenderSelector() {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacingM),
+    decoration: BoxDecoration(
+      color: AppTheme.successGreen.withOpacity(0.1),
+      borderRadius: AppTheme.radiusM,
+    ),
+    child: DropdownButton<String>(
+      value: _selectedGender,
+      onChanged: (String? newValue) {
+        setState(() {
+          _selectedGender = newValue;
+        });
+      },
+      items: const [
+        DropdownMenuItem(value: 'M', child: Text('Male')),
+        DropdownMenuItem(value: 'F', child: Text('Female')),
+      ],
+      underline: const SizedBox(),
+      icon: Icon(Icons.arrow_drop_down_rounded, color: AppTheme.successGreen),
+      dropdownColor: Colors.white,
+      borderRadius: AppTheme.radiusM,
+    ),
+  );
+}
 
   Widget _buildAccountSection() {
     return Column(
@@ -683,46 +1151,31 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
   }
 
   Widget _buildHealthSettingsSection() {
-    final targetMin = _userProfile?['target_glucose_min'];
-    final targetMax = _userProfile?['target_glucose_max'];
-    final targetRange = (targetMin != null && targetMax != null)
-        ? '$targetMin-$targetMax mg/dL'
-        : '70-180 mg/dL';
-    
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Health Settings',
-          style: AppTheme.titleMedium.copyWith(
-            fontWeight: FontWeight.w700,
-          ),
+  final targetMin = _userProfile?['target_glucose_min'];
+  final targetMax = _userProfile?['target_glucose_max'];
+  final targetRange = (targetMin != null && targetMax != null)
+      ? '$targetMin-$targetMax mg/dL'
+      : '70-180 mg/dL';
+  
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        'Health Settings',
+        style: AppTheme.titleMedium.copyWith(
+          fontWeight: FontWeight.w700,
         ),
-        const SizedBox(height: AppTheme.spacingM),
-        BaseCard(
-          padding: EdgeInsets.zero,
-          child: Column(
-            children: [
-              _ProfileSettingTile(
-                icon: Icons.trending_up_rounded,
-                iconColor: AppTheme.successGreen,
-                title: 'Target Glucose Range',
-                subtitle: 'Your ideal blood sugar levels',
-                trailing: Text(
-                  targetRange,
-                  style: AppTheme.bodySmall.copyWith(
-                    color: AppTheme.textSecondary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  Navigator.pushNamed(context, '/profile-setup').then((_) { //change to be edited in same page
-                    _loadUserProfile();
-                  });
-                },
-              ),
-              FutureBuilder<Map<String, dynamic>>(
+      ),
+      const SizedBox(height: AppTheme.spacingM),
+      BaseCard(
+        padding: EdgeInsets.zero,
+        child: Column(
+          children: [
+            // Target Glucose Range - Editable
+            _buildTargetGlucoseTile(targetRange, targetMin, targetMax),
+            
+            // LibreView Connection
+            FutureBuilder<Map<String, dynamic>>(
               future: _apiService.getLibreStatus(),
               builder: (context, snapshot) {
                 final isConnected = snapshot.data?['is_connected'] ?? false;
@@ -772,29 +1225,266 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                 );
               },
             ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
 
-              _ProfileSettingTile(
-                icon: Icons.restaurant_rounded,
-                iconColor: AppTheme.mealColor,
-                title: 'Meal Preferences',
-                subtitle: 'Dietary filters and cuisines',
-                trailing: Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppTheme.textTertiary,
-                  size: 20,
+Widget _buildTargetGlucoseTile(String targetRange, dynamic targetMin, dynamic targetMax) {
+  return Material(
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        _showEditTargetRangeDialog(targetMin, targetMax);
+      },
+      child: Padding(
+        padding: const EdgeInsets.all(AppTheme.spacingL),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(AppTheme.spacingS),
+              decoration: BoxDecoration(
+                color: AppTheme.successGreen.withOpacity(0.1),
+                borderRadius: AppTheme.radiusS,
+              ),
+              child: Icon(
+                Icons.trending_up_rounded,
+                color: AppTheme.successGreen,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: AppTheme.spacingL),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Target Glucose Range',
+                    style: AppTheme.titleSmall.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Your ideal blood sugar levels',
+                    style: AppTheme.bodySmall.copyWith(
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  targetRange,
+                  style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  _showSnackBar('Meal preferences coming soon');
-                },
-                showDivider: false,
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryBlue.withOpacity(0.1),
+                    borderRadius: AppTheme.radiusS,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.edit_rounded,
+                        size: 12,
+                        color: AppTheme.primaryBlue,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Edit',
+                        style: AppTheme.bodySmall.copyWith(
+                          color: AppTheme.primaryBlue,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+void _showEditTargetRangeDialog(dynamic currentMin, dynamic currentMax) {
+  _targetMinController.text = currentMin?.toString() ?? '70';
+  _targetMaxController.text = currentMax?.toString() ?? '180';
+  
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: AppTheme.radiusL),
+      title: Row(
+        children: [
+          Icon(Icons.trending_up_rounded, color: AppTheme.primaryBlue),
+          const SizedBox(width: AppTheme.spacingM),
+          const Text('Target Glucose Range'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Set your ideal blood glucose range (mg/dL):',
+            style: AppTheme.bodyMedium,
+          ),
+          const SizedBox(height: AppTheme.spacingL),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _targetMinController,
+                  decoration: InputDecoration(
+                    labelText: 'Minimum',
+                    hintText: '70',
+                    border: OutlineInputBorder(
+                      borderRadius: AppTheme.radiusM,
+                      borderSide: BorderSide(color: AppTheme.borderLight),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: AppTheme.radiusM,
+                      borderSide: BorderSide(color: AppTheme.primaryBlue),
+                    ),
+                  ),
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
+                ),
+              ),
+              const SizedBox(width: AppTheme.spacingM),
+              Text(
+                'to',
+                style: AppTheme.bodyMedium.copyWith(
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+              const SizedBox(width: AppTheme.spacingM),
+              Expanded(
+                child: TextField(
+                  controller: _targetMaxController,
+                  decoration: InputDecoration(
+                    labelText: 'Maximum',
+                    hintText: '180',
+                    border: OutlineInputBorder(
+                      borderRadius: AppTheme.radiusM,
+                      borderSide: BorderSide(color: AppTheme.borderLight),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: AppTheme.radiusM,
+                      borderSide: BorderSide(color: AppTheme.primaryBlue),
+                    ),
+                  ),
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.done,
+                ),
               ),
             ],
           ),
+          const SizedBox(height: AppTheme.spacingM),
+          Container(
+            padding: const EdgeInsets.all(AppTheme.spacingM),
+            decoration: BoxDecoration(
+              color: AppTheme.primaryBlue.withOpacity(0.05),
+              borderRadius: AppTheme.radiusM,
+              border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.2)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline_rounded, 
+                    color: AppTheme.primaryBlue, size: 16),
+                const SizedBox(width: AppTheme.spacingM),
+                Expanded(
+                  child: Text(
+                    'Typical range: 70-180 mg/dL for most adults with diabetes',
+                    style: AppTheme.bodySmall.copyWith(
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            final min = int.tryParse(_targetMinController.text);
+            final max = int.tryParse(_targetMaxController.text);
+            
+            if (min == null || max == null) {
+              _showSnackBar('Please enter valid numbers', isSuccess: false);
+              return;
+            }
+            
+            if (min >= max) {
+              _showSnackBar('Minimum must be less than maximum', isSuccess: false);
+              return;
+            }
+            
+            Navigator.pop(context);
+            await _updateTargetRange(min, max);
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.primaryBlue,
+          ),
+          child: const Text('Save Range'),
         ),
       ],
-    );
+    ),
+  );
+}
+
+Future<void> _updateTargetRange(int min, int max) async {
+  try {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    await _apiService.updateProfile({
+      'target_glucose_min': min,
+      'target_glucose_max': max,
+    });
+    
+    // Refresh profile data
+    await _loadUserProfile();
+    
+    if (mounted) {
+      _showSnackBar('Target range updated to $min-$max mg/dL');
+    }
+  } catch (e) {
+    print('Error updating target range: $e');
+    if (mounted) {
+      _showSnackBar('Failed to update target range', isSuccess: false);
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
+}
+
 
   String _formatLastSync(dynamic lastSync) {
   try {
@@ -816,26 +1506,45 @@ Widget _buildInsulinSettings() {
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(
-        'Insulin Settings',
-        style: AppTheme.titleMedium.copyWith(
-          fontWeight: FontWeight.w700,
-        ),
+      Row(
+        children: [
+          Text(
+            'Insulin Settings',
+            style: AppTheme.titleMedium.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const Spacer(),
+          IconButton(
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              _showEditInsulinSettingsInfo();
+            },
+            icon: Icon(
+              Icons.info_outline_rounded,
+              color: AppTheme.textSecondary,
+              size: 20,
+            ),
+            tooltip: 'Learn about insulin settings',
+          ),
+        ],
       ),
       const SizedBox(height: AppTheme.spacingM),
       BaseCard(
         child: Column(
           children: [
-            _buildInsulinRatioRow(
+            _buildEditableInsulinRatioRow(
               'Insulin to Carb Ratio',
               _userProfile?['insulin_to_carb_ratio'],
               'Units per 15g carbs',
+              onTap: _showEditCarbRatioDialog,
             ),
             const SizedBox(height: AppTheme.spacingM),
-            _buildInsulinRatioRow(
+            _buildEditableInsulinRatioRow(
               'Correction Factor',
               _userProfile?['correction_factor'],
               'Points per unit',
+              onTap: _showEditCorrectionFactorDialog,
             ),
           ],
         ),
@@ -844,29 +1553,121 @@ Widget _buildInsulinSettings() {
   );
 }
 
-Widget _buildInsulinRatioRow(String label, dynamic value, String unit) {
-  return Row(
-    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-    children: [
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+Widget _buildEditableInsulinRatioRow(String label, dynamic value, String unit, {required VoidCallback onTap}) {
+  return Material(
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: AppTheme.radiusM,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppTheme.spacingS, horizontal: AppTheme.spacingS),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: AppTheme.titleSmall),
+                  Text(unit, style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.textSecondary,
+                  )),
+                ],
+              ),
+            ),
+            Row(
+              children: [
+                Text(
+                  value?.toString() ?? 'Not Set',
+                  style: AppTheme.titleMedium.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: value != null ? AppTheme.primaryBlue : AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(width: AppTheme.spacingS),
+                Icon(
+                  Icons.edit_rounded,
+                  color: AppTheme.textTertiary,
+                  size: 16,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+void _showEditInsulinSettingsInfo() {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: AppTheme.radiusL),
+      title: Row(
         children: [
-          Text(label, style: AppTheme.titleSmall),
-          Text(unit, style: AppTheme.bodySmall.copyWith(
-            color: AppTheme.textSecondary,
-          )),
+          Icon(Icons.insights_rounded, color: AppTheme.primaryBlue),
+          const SizedBox(width: AppTheme.spacingM),
+          const Text('Insulin Settings Guide'),
         ],
       ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildInfoItem(
+            'Insulin to Carb Ratio',
+            'How many units of insulin you need for 15g of carbohydrates.\nExample: 1.5 means 1.5 units per 15g carbs',
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          _buildInfoItem(
+            'Correction Factor',
+            'How much 1 unit of insulin lowers your blood glucose.\nExample: 50 means 1 unit lowers by 50 mg/dL',
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          Text(
+            'Tap on any setting to edit it.',
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textSecondary,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.primaryBlue,
+          ),
+          child: const Text('Got it'),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _buildInfoItem(String title, String description) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
       Text(
-        value?.toString() ?? 'Not Set',
-        style: AppTheme.titleMedium.copyWith(
-          fontWeight: FontWeight.w700,
-          color: AppTheme.primaryBlue,
+        title,
+        style: AppTheme.titleSmall.copyWith(
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      const SizedBox(height: 4),
+      Text(
+        description,
+        style: AppTheme.bodySmall.copyWith(
+          color: AppTheme.textSecondary,
         ),
       ),
     ],
   );
 }
+
 
   Widget _buildLogoutSection() {
     return Column(
@@ -1065,6 +1866,90 @@ class _ProfileSettingTile extends StatelessWidget {
       trailing: trailing,
       onTap: onTap,
       showDivider: showDivider,
+    );
+  }
+}
+
+class _EditableStatItem extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final Color color;
+  final TextInputType inputType;
+  final String? suffix;
+
+  const _EditableStatItem({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.inputType,
+    this.suffix,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(AppTheme.spacingS),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: AppTheme.radiusS,
+          ),
+          child: Icon(
+            icon,
+            color: color,
+            size: 16,
+          ),
+        ),
+        const SizedBox(height: AppTheme.spacingS),
+        SizedBox(
+          width: 60,
+          height: 32,
+          child: TextField(
+            controller: controller,
+            keyboardType: inputType,
+            textAlign: TextAlign.center,
+            style: AppTheme.titleSmall.copyWith(
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              border: OutlineInputBorder(
+                borderRadius: AppTheme.radiusS,
+                borderSide: BorderSide(color: color.withOpacity(0.5)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: AppTheme.radiusS,
+                borderSide: BorderSide(color: color),
+              ),
+              hintText: '--',
+              hintStyle: AppTheme.titleSmall.copyWith(
+                color: AppTheme.textSecondary,
+              ),
+              suffix: suffix != null 
+                  ? Text(
+                      suffix!,
+                      style: AppTheme.bodySmall.copyWith(
+                        color: color,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    )
+                  : null,
+            ),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: AppTheme.bodySmall.copyWith(
+            color: AppTheme.textSecondary,
+          ),
+        ),
+      ],
     );
   }
 }

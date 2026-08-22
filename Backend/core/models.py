@@ -136,25 +136,38 @@ class FoodEntry(models.Model):
                     total_carbs_g=float(total_carbs),
                     carb_ratio=float(carb_ratio),
                     current_glucose=current_glucose,
-                    correction_factor=correction_factor,
+                    correction_factor=float(correction_factor) if correction_factor else None,
+                    target_bg=float(getattr(self.user, 'target_glucose_min', 100)),
                 )
+
                 self.insulin_recommended = calc.get("recommended_dose")
                 self.insulin_rounded = calc.get("rounded_dose")
                 changed = True
-        except Exception:
-            pass
+
+        except Exception as e:
+            print(f"Insulin calculation failed: {e}")
+        # Set to None if calculation fails
+        self.insulin_recommended = None
+        self.insulin_rounded = None
+        changed = True
 
         if changed:
-            self.save(update_fields=[
-                "nutritional_info",
-                "food_name",
-                "insulin_recommended",
-                "insulin_rounded",
-            ])   
+            update_fields = []
+            if self.nutritional_info:
+                update_fields.append("nutritional_info")
+            if self.food_name:
+                update_fields.append("food_name")
+            if self.insulin_recommended is not None:
+                update_fields.extend(["insulin_recommended", "insulin_rounded"])
+                
+            self.save(update_fields=update_fields if update_fields else None)
+            
         return {
             **result,
             "nutritional_info_id": ni.id,
             "food_entry_id": str(self.id),
+            "insulin_recommended": self.insulin_recommended,
+            "insulin_rounded": self.insulin_rounded,
         }             
 
     def __str__(self):

@@ -9,3 +9,16 @@ glugo/.env
 # OS or editor-specific files
 *.log
 *.DS_Store
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# local dev database
+Backend/db.sqlite3
+
+# User-uploaded content
+Backend/media/
+
+SESSION_SUMMARY.md
+note.txt

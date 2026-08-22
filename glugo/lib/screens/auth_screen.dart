@@ -238,8 +238,11 @@ class _AuthScreenState extends State<AuthScreen>
   }
 
   Future<void> _checkLoginStatus() async {
+      print('🔍 Checking login status started: ${DateTime.now()}');
     await _apiService.init();
+    print('✅ API service initialized: ${DateTime.now()}');
     if (_apiService.isLoggedIn && mounted) {
+      print('🚀 Already logged in, navigating to home: ${DateTime.now()}');
       Navigator.pushReplacementNamed(context, '/home');
     }
   }
@@ -275,19 +278,28 @@ class _AuthScreenState extends State<AuthScreen>
   }
 
   void _submitForm() async {
+    print('🔵 SUBMIT FORM CALLED: ${DateTime.now()}');
     FocusScope.of(context).unfocus();
+    print('🔵 Focus unfocused: ${DateTime.now()}');
     
     if (!_formKey.currentState!.validate()) {
+      print('❌ Form validation failed');
       HapticFeedback.lightImpact();
       return;
     }
+    print('✅ Form validated: ${DateTime.now()}');
 
     setState(() => _isLoading = true);
+    print('🔄 Loading state set to true: ${DateTime.now()}');
     HapticFeedback.mediumImpact();
 
     try {
       final username = _usernameController.text.trim();
+      print('📝 Username: $username');
+    print('🌐 About to call API login: ${DateTime.now()}');
       await _apiService.login(username, _passwordController.text);
+
+      print('✅ API login completed: ${DateTime.now()}');
       
       // Save username for future auto-fill
       await _saveUsername(username);

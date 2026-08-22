@@ -2,8 +2,9 @@ from django.shortcuts import render
 from django.http import HttpResponse, JsonResponse
 from django.db.models.functions import Lower
 from requests import Response
-from rest_framework.views import APIView
+from rest_framework.views import APIView 
 from rest_framework import generics, status
+from rest_framework.decorators import api_view
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response as DRFResponse
 from core.serializers import GlucoseRecordSerializer, FoodEntrySerializer
@@ -199,3 +200,34 @@ class FoodEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+    
+# In your views.py
+@api_view(['GET'])
+def debug_prediction_service(request):
+    """Debug endpoint to check prediction service status"""
+    from core.services.prediction import prediction_service
+    
+    debug_info = {
+        'service_loaded': prediction_service.loaded,
+        'cnn_lstm_loaded': prediction_service.cnn_lstm_model is not None,
+        'lgb_loaded': prediction_service.lgb_model is not None,
+        'scaler_loaded': prediction_service.scaler is not None,
+        'feature_order_loaded': prediction_service.feature_order is not None,
+        'model_paths': {
+            'cnn_lstm': prediction_service.cnn_lstm_path,
+            'lgb': prediction_service.lgb_path,
+            'scaler': prediction_service.scaler_path,
+            'feature_order': prediction_service.feature_order_path,
+        }
+    }
+    
+    # Check if files exist
+    import os
+    debug_info['files_exist'] = {
+        'cnn_lstm': os.path.exists(prediction_service.cnn_lstm_path),
+        'lgb': os.path.exists(prediction_service.lgb_path),
+        'scaler': os.path.exists(prediction_service.scaler_path),
+        'feature_order': os.path.exists(prediction_service.feature_order_path),
+    }
+    
+    return Response(debug_info)

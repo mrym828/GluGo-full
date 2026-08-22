@@ -123,14 +123,14 @@ class _ReadingItem extends StatelessWidget {
     final minute = timestamp.minute;
     final period = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+    return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
     }
     else if (timestamp.isAfter(yesterday) && timestamp.isBefore(today)) {
     final hour = timestamp.hour;
     final minute = timestamp.minute;
     final period = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return 'Yesterday ${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+    return 'Yesterday $displayHour:${minute.toString().padLeft(2, '0')} $period';
     }
     else {
     final hour = timestamp.hour;
@@ -141,7 +141,7 @@ class _ReadingItem extends StatelessWidget {
     final day = timestamp.day;
     final year = timestamp.year.toString().substring(2); // Last 2 digits of year
     
-    return '$month/$day/$year ${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+    return '$month/$day/$year $displayHour:${minute.toString().padLeft(2, '0')} $period';
     }
   }
 

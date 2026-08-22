@@ -576,7 +576,7 @@ class _MealsScreenState extends State<MealsScreen> {
               ...group.value.map((entry) => _buildMealCard(entry)),
             ],
           );
-        }).toList(),
+        }),
       ],
     );
   }

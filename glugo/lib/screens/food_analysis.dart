@@ -7,6 +7,7 @@ import '../utils/theme.dart';
 import '../widgets/shared_components.dart';
 import '../models/food_models.dart';
 import 'dart:math' as math;
+import '../utils/glucose_utils.dart';
 
 class FoodAnalysisPage extends StatefulWidget {
   const FoodAnalysisPage({super.key});
@@ -29,8 +30,8 @@ class _FoodAnalysisPageState extends State<FoodAnalysisPage>
   bool _showImageOverlay = true;
   
   // Chart interaction
-  double _chartScale = 1.0;
-  double _chartOffset = 0.0;
+  final double _chartScale = 1.0;
+  final double _chartOffset = 0.0;
   final TransformationController _chartController = TransformationController();
 
   // Logging progress
@@ -49,7 +50,6 @@ class _FoodAnalysisPageState extends State<FoodAnalysisPage>
   double protein = 0;
   double fat = 0;
 
-  // Example profile values
   double carbRatio = 10;
   double currentGlucose = 154;
   double targetGlucose = 110;
@@ -62,8 +62,10 @@ class _FoodAnalysisPageState extends State<FoodAnalysisPage>
   double? _currentGlucose;
   String? _predictionRiskLevel;
   List<dynamic> _predictionTimeline = [];
-
-// Add these methods to _FoodAnalysisPageState class
+  double _mealServing = 1.0;
+  List<dynamic> _insulinSafetyFlags = [];
+  String? _predictedTrend;
+  double? _recommendedInsulinDose;
 
 Future<void> _getGlucosePrediction() async {
   if (_isPredicting) return;
@@ -74,50 +76,115 @@ Future<void> _getGlucosePrediction() async {
 
   try {
     HapticFeedback.lightImpact();
-    
-    // Calculate insulin dose for prediction
-    double carbDose = carbs / carbRatio;
-    double correctionDose = (currentGlucose - targetGlucose) / isf;
-    double totalDose = carbDose + correctionDose;
 
     final apiService = ApiService();
     await apiService.init();
 
+    final today = DateTime.now();
+    final startOfDay = DateTime(today.year, today.month, today.day);
+    final endOfDay = DateTime(today.year, today.month, today.day, 23, 59, 59);
+
+    double currentGlucose;  
+    final records = await apiService.getGlucoseRecords(
+      startDate: startOfDay,
+      endDate: endOfDay,
+      limit: 50,
+    );
+    final latestReading = getLatestGlucoseReading(records);
+    currentGlucose = latestReading?['glucose_level']?.toDouble() ?? 154.0; 
+
+    this.currentGlucose = currentGlucose;
+
+    print('Actual current glucose: $currentGlucose mg/dL');
+    print('carbs: $carbs');
+
+    // Insulin dose is left for the backend to recommend: it runs a 30-min
+    // glucose forecast first and feeds that into calculate_insulin as a
+    // hypo-safety check on the correction dose, so it can suppress or
+    // reduce the dose if glucose is already trending toward a low.
     final prediction = await apiService.predictGlucoseAfterMeal(
       carbs: carbs,
-      insulin: totalDose,
       model: 'ensemble',
       lookback: 240,
     );
     
     if (prediction != null && prediction['success'] == true) {
+
+      final withInsulinPrediction = prediction['with_insulin']?['prediction'];
+      final insulinCalc = prediction['insulin_calculation'];
+
+      if (withInsulinPrediction != null){
       setState(() {
         _predictionResult = prediction;
-        _predictedGlucose = prediction['prediction']['glucose_mg_dl']?.toDouble();
-        _currentGlucose = prediction['prediction']['current_glucose']?.toDouble();
-        _predictionRiskLevel = prediction['prediction']['risk_assessment']?['level'];
-        _predictionTimeline = prediction['prediction']['timeline'] ?? [];
+        _predictedGlucose = withInsulinPrediction['glucose_mg_dl']?.toDouble();
+        _currentGlucose = currentGlucose;
+        _predictionRiskLevel = withInsulinPrediction['risk_assessment']?['level'];
+        _predictionTimeline = withInsulinPrediction['timeline'] ?? [];
+        _recommendedInsulinDose =
+            (prediction['with_insulin']?['insulin_dose'] as num?)?.toDouble();
+        _insulinSafetyFlags =
+            List<dynamic>.from(insulinCalc?['safety_flags'] ?? const []);
+        _predictedTrend = insulinCalc?['predicted_trend'] as String?;
       });
-      
+
+      final hypoSafetyTriggered = _insulinSafetyFlags.contains(
+              'predicted_hypo_risk_correction_suppressed') ||
+          _insulinSafetyFlags.contains(
+              'predicted_falling_trend_correction_reduced');
+
       // Show prediction in a snackbar
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(
             children: [
               Icon(
-                _predictionRiskLevel == 'normal' ? Icons.check_circle : Icons.warning,
+                hypoSafetyTriggered
+                    ? Icons.trending_down
+                    : (_predictionRiskLevel == 'normal'
+                        ? Icons.check_circle
+                        : Icons.warning),
                 color: Colors.white,
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  'Predicted glucose: ${_predictedGlucose?.toStringAsFixed(1)} mg/dL',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Current: ${_currentGlucose?.toStringAsFixed(1)} mg/dL',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      Text(
+                        'Predicted: ${_predictedGlucose?.toStringAsFixed(1)} mg/dL',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      if (_recommendedInsulinDose != null)
+                        Text(
+                          'Recommended dose: ${_recommendedInsulinDose!.toStringAsFixed(1)}U',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      if (_trendLabel() != null)
+                        Text(
+                          'Glucose trend: ${_trendLabel()}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      if (hypoSafetyTriggered)
+                        const Text(
+                          'Correction dose reduced: glucose trending toward a low',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                    ],
                 ),
               ),
             ],
           ),
-          backgroundColor: _getRiskColor(_predictionRiskLevel),
+          backgroundColor: hypoSafetyTriggered
+              ? AppTheme.warningOrange
+              : _getRiskColor(_predictionRiskLevel),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.all(16),
           shape: RoundedRectangleBorder(
@@ -126,6 +193,7 @@ Future<void> _getGlucosePrediction() async {
           duration: const Duration(seconds: 4),
         ),
       );
+    }
     }
   } catch (e) {
     print('Prediction error: $e');
@@ -167,6 +235,35 @@ String _getRiskMessage(String? riskLevel, double? glucose) {
   }
 }
 
+/// Human-readable label for the backend's independent glucose-trend
+/// forecast (insulin_calculation.predicted_trend) — the signal used for
+/// the hypo-safety check. Null when no trend was available.
+String? _trendLabel() {
+  switch (_predictedTrend) {
+    case 'falling':
+      return '↓ Falling';
+    case 'rising':
+      return '↑ Rising';
+    case 'stable':
+      return '→ Stable';
+    default:
+      return null;
+  }
+}
+
+/// Human-readable note when the backend's hypo-safety check adjusted the
+/// correction dose based on the predicted glucose trend. Null when no
+/// adjustment was made.
+String? _insulinSafetyFlagMessage() {
+  if (_insulinSafetyFlags.contains('predicted_hypo_risk_correction_suppressed')) {
+    return 'Correction dose suppressed: glucose is predicted to drop toward a low.';
+  }
+  if (_insulinSafetyFlags.contains('predicted_falling_trend_correction_reduced')) {
+    return 'Correction dose reduced: glucose is trending downward.';
+  }
+  return null;
+}
+
   @override
   void initState() {
     super.initState();
@@ -201,6 +298,7 @@ String _getRiskMessage(String? riskLevel, double? glucose) {
           protein = (analysisResult!['total_protein_g'] ?? 0).toDouble();
           fat = (analysisResult!['total_fat_g'] ?? 0).toDouble();
           
+          _mealServing = 1.0;
         }
       });
       
@@ -331,6 +429,7 @@ void _deleteItem(int index) {
             Navigator.pop(context);
             HapticFeedback.heavyImpact();
             setState(() {
+              final deletedItem = detectedItems[index];
               detectedItems.removeAt(index);
               _recalculateTotalNutrition();
             });
@@ -356,12 +455,13 @@ void _addNewItem() {
 void _recalculateTotalNutrition() {
   // Recalculate total carbs from all items
   final totalCarbs = detectedItems.fold(0.0, (sum, item) => sum + item.carbsG);
+  final totalProtein = detectedItems.fold(0.0, (sum, item) => sum + (item.carbsG * 0.4));
+  final totalFat = detectedItems.fold(0.0, (sum, item) => sum + (item.carbsG * 0.3));
   
   setState(() {
     carbs = totalCarbs;
-    protein = carbs * 0.4;
-    fat = carbs * 0.3;
-
+    protein = totalProtein;
+    fat = totalFat;
     calories = (carbs * 4) + (protein * 4) + (fat *9);
   });
 }
@@ -376,7 +476,6 @@ void _recalculateTotalNutrition() {
 
   void _showAddItemDialog() {
   final TextEditingController nameController = TextEditingController();
-  final TextEditingController quantityController = TextEditingController(text: '1.0');
   final TextEditingController carbsController = TextEditingController();
   String selectedUnit = 'serving';
 
@@ -409,48 +508,6 @@ void _recalculateTotalNutrition() {
                 ),
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: TextField(
-                      controller: quantityController,
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(
-                        labelText: 'Quantity',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 3,
-                    child: DropdownButtonFormField<String>(
-                      value: selectedUnit,
-                      decoration: InputDecoration(
-                        labelText: 'Unit',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      items: ['serving', 'cup', 'piece', 'gram', 'ounce', 'tablespoon']
-                          .map((unit) => DropdownMenuItem(
-                                value: unit,
-                                child: Text(unit),
-                              ))
-                          .toList(),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          selectedUnit = value!;
-                        });
-                      },
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
               TextField(
                 controller: carbsController,
                 keyboardType: TextInputType.number,
@@ -480,7 +537,6 @@ void _recalculateTotalNutrition() {
           ElevatedButton(
             onPressed: () {
               final name = nameController.text.trim();
-              final quantity = int.tryParse(quantityController.text) ?? 1;
               final carbs = double.tryParse(carbsController.text) ?? 0.0;
               
               if (name.isNotEmpty && carbs > 0) {
@@ -490,7 +546,7 @@ void _recalculateTotalNutrition() {
                 setState(() {
                   detectedItems.add(FoodComponent(
                     name: name,
-                    quantity: quantity,
+                    quantity: 1,
                     unit: selectedUnit,
                     carbsG: carbs,
                   ));
@@ -1015,95 +1071,245 @@ void _showEditItemDialog(int index) {
   }
 
   Widget _buildAnimatedNutritionSummary() {
-    return _AnalysisCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  return _AnalysisCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Nutrition Summary',
+              style: AppTheme.titleMedium.copyWith(
+                fontWeight: FontWeight.w700,
+                color: AppTheme.primaryBlue,
+              ),
+            ),
+            Row(
+              children: [
+                Icon(
+                  Icons.calendar_today_outlined,
+                  size: 14,
+                  color: AppTheme.textSecondary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '${DateTime.now().hour}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+                  style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        
+        // Meal Serving Control
+        const SizedBox(height: 12),
+        _buildMealServingControl(),
+        const SizedBox(height: 16),
+        
+        Row(
+          children: [
+            Expanded(
+              child: _buildAnimatedNutrientCard(
+                'Carbs',
+                carbs,
+                'g',
+                Icons.grain_outlined,
+                AppTheme.primaryBlue,
+                delay: 0,
+                highlight: true,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildAnimatedNutrientCard(
+                'Calories',
+                calories,
+                '',
+                Icons.local_fire_department_outlined,
+                AppTheme.warningOrange,
+                delay: 100,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _buildAnimatedNutrientCard(
+                'Protein',
+                protein,
+                'g',
+                Icons.fitness_center_outlined,
+                AppTheme.successGreen,
+                delay: 200,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildAnimatedNutrientCard(
+                'Fat',
+                fat,
+                'g',
+                Icons.opacity_outlined,
+                AppTheme.errorRed,
+                delay: 300,
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _buildMealServingControl() {
+  return Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: AppTheme.primaryBlue.withOpacity(0.05),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(
+        color: AppTheme.primaryBlue.withOpacity(0.2),
+      ),
+    ),
+    child: Row(
+      children: [
+        Icon(
+          Icons.restaurant_menu_rounded,
+          size: 16,
+          color: AppTheme.primaryBlue,
+        ),
+        const SizedBox(width: 8),
+        Text(
+          'Meal Serving',
+          style: AppTheme.bodyMedium.copyWith(
+            fontWeight: FontWeight.w600,
+            color: AppTheme.primaryBlue,
+          ),
+        ),
+        const Spacer(),
+        
+        // Decrease serving button
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _adjustMealServing(-0.5),
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: AppTheme.errorRed.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Icon(
+                Icons.remove_rounded,
+                size: 16,
+                color: AppTheme.errorRed,
+              ),
+            ),
+          ),
+        ),
+        
+        const SizedBox(width: 12),
+        
+        // Serving display
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: AppTheme.borderLight,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'Nutrition Summary',
-                style: AppTheme.titleMedium.copyWith(
+                _mealServing.toStringAsFixed(1),
+                style: AppTheme.bodyMedium.copyWith(
                   fontWeight: FontWeight.w700,
                   color: AppTheme.primaryBlue,
                 ),
               ),
-              Row(
-                children: [
-                  Icon(
-                    Icons.calendar_today_outlined,
-                    size: 14,
-                    color: AppTheme.textSecondary,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${DateTime.now().hour}:${DateTime.now().minute.toString().padLeft(2, '0')}',
-                    style: AppTheme.bodySmall.copyWith(
-                      color: AppTheme.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildAnimatedNutrientCard(
-                  'Carbs',
-                  carbs,
-                  'g',
-                  Icons.grain_outlined,
-                  AppTheme.primaryBlue,
-                  delay: 0,
-                  highlight: true,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildAnimatedNutrientCard(
-                  'Calories',
-                  calories,
-                  '',
-                  Icons.local_fire_department_outlined,
-                  AppTheme.warningOrange,
-                  delay: 100,
+              Text(
+                'serving${_mealServing != 1.0 ? 's' : ''}',
+                style: AppTheme.bodySmall.copyWith(
+                  color: AppTheme.textSecondary,
+                  fontSize: 10,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _buildAnimatedNutrientCard(
-                  'Protein',
-                  protein,
-                  'g',
-                  Icons.fitness_center_outlined,
-                  AppTheme.successGreen,
-                  delay: 200,
-                ),
+        ),
+        
+        const SizedBox(width: 12),
+        
+        // Increase serving button
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _adjustMealServing(0.5),
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: AppTheme.successGreen.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(6),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildAnimatedNutrientCard(
-                  'Fat',
-                  fat,
-                  'g',
-                  Icons.opacity_outlined,
-                  AppTheme.errorRed,
-                  delay: 300,
-                ),
+              child: Icon(
+                Icons.add_rounded,
+                size: 16,
+                color: AppTheme.successGreen,
               ),
-            ],
+            ),
           ),
-        ],
-      ),
-    );
-  }
+        ),
+      ],
+    ),
+  );
+}
+
+void _adjustMealServing(double adjustment) {
+  HapticFeedback.lightImpact();
+  setState(() {
+     final newServing = (_mealServing + adjustment).clamp(0.5, 5.0);
+
+      if (newServing != _mealServing) {
+      final scaleFactor = newServing / _mealServing;
+      
+      // Scale all nutrition values
+      carbs *= scaleFactor;
+      calories *= scaleFactor;
+      protein *= scaleFactor;
+      fat *= scaleFactor;
+      
+      // Scale individual food items
+      for (int i = 0; i < detectedItems.length; i++) {
+        final item = detectedItems[i];
+        final updatedItem = FoodComponent(
+          name: item.name,
+          quantity: (item.quantity * scaleFactor).round(),
+          unit: item.unit,
+          carbsG: item.carbsG * scaleFactor,
+        );
+        detectedItems[i] = updatedItem;
+      }
+      _mealServing = newServing;
+
+      if (_mealServing != 1.0) {
+        mealName = '${analysisResult?['name'] ?? 'Unknown Meal'} (${_mealServing.toStringAsFixed(1)}x)';
+      } else {
+        mealName = analysisResult?['name'] ?? 'Unknown Meal';
+      }
+      }
+  });
+}
+
 
   Widget _buildAnimatedNutrientCard(
     String label,
@@ -1208,72 +1414,146 @@ void _showEditItemDialog(int index) {
             ),
             const SizedBox(width: 8),
             Text(
-              'Glucose Impact Timeline',
+              '30-Minute Glucose Prediction',
               style: AppTheme.titleMedium.copyWith(
                 fontWeight: FontWeight.w700,
                 color: AppTheme.primaryBlue,
               ),
             ),
-            if (_predictedGlucose != null) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppTheme.infoBlue.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  'AI Predicted',
-                  style: AppTheme.bodySmall.copyWith(
-                    color: AppTheme.infoBlue,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
         const SizedBox(height: 8),
         Text(
-          'Pinch to zoom • Drag to pan',
+          'Based on your meal and current glucose',
           style: AppTheme.bodySmall.copyWith(
             color: AppTheme.textSecondary,
             fontSize: 11,
-            fontStyle: FontStyle.italic,
           ),
         ),
         const SizedBox(height: 16),
         SizedBox(
-          height: 200,
-          child: AnimatedBuilder(
-            animation: _chartAnimation,
-            builder: (context, child) {
-              return InteractiveViewer(
-                transformationController: _chartController,
-                boundaryMargin: const EdgeInsets.all(20),
-                minScale: 0.5,
-                maxScale: 3.0,
-                onInteractionUpdate: (details) {
-                  HapticFeedback.selectionClick();
-                },
-                child: CustomPaint(
-                  size: const Size(double.infinity, 200),
-                  painter: _GlucoseChartPainter(
-                    carbs: carbs,
-                    currentGlucose: currentGlucose,
-                    animation: _chartAnimation,
-                    context: context,
-                    predictedGlucose: _predictedGlucose,
-                    predictionTimeline: _predictionTimeline,
-                  ),
-                ),
-              );
-            },
-          ),
+          height: 180,
+          child: _predictionTimeline.isNotEmpty
+            ? _buildPredictionBarChart()
+            : _buildPlaceholderChart(),
         ),
         const SizedBox(height: 12),
         _buildChartLegend(),
+      ],
+    ),
+  );
+  }
+
+  Widget _buildPredictionBarChart() {
+  // Use the actual timeline data from prediction
+  final timeline = _predictionTimeline;
+  
+  return Column(
+    children: [
+      // Chart bars
+      Expanded(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: _buildChartBars(timeline),
+        ),
+      ),
+      // X-axis line
+      Container(
+        height: 1,
+        color: AppTheme.borderLight.withOpacity(0.5),
+        margin: const EdgeInsets.only(top: 8),
+      ),
+    ],
+  );
+}
+List<Widget> _buildChartBars(List<dynamic> timeline) {
+  return timeline.asMap().entries.map<Widget>((entry) {
+    final index = entry.key;
+    final data = entry.value;
+    final glucose = (data['glucose'] as num).toDouble();
+    final minutes = data['minutes'] as int;
+    
+    // Calculate bar height (normalize to chart height)
+    final maxGlucose = timeline.fold<double>(0, (max, item) {
+      final itemGlucose = (item['glucose'] as num).toDouble();
+      return itemGlucose > max ? itemGlucose : max;
+    });
+    final minGlucose = 70.0; // Base level
+    final availableRange = (maxGlucose - minGlucose).clamp(50.0, 200.0);
+    final barHeight = ((glucose - minGlucose) / availableRange).clamp(0.1, 1.0);
+    
+    return Expanded(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // Bar
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: _getBarGradient(glucose),
+              ),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(4),
+                topRight: Radius.circular(4),
+              ),
+            ),
+            width: 24,
+            height: 120 * barHeight,
+          ),
+          const SizedBox(height: 8),
+          // Time label
+          Text(
+            '${minutes}m',
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textSecondary,
+              fontSize: 10,
+            ),
+          ),
+          const SizedBox(height: 4),
+          // Glucose value
+          Text(
+            glucose.toStringAsFixed(0),
+            style: AppTheme.bodySmall.copyWith(
+              color: AppTheme.textPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }).toList();
+}
+  List<Color> _getBarGradient(double glucose) {
+  if (glucose < 70) {
+    return [AppTheme.warningOrange, AppTheme.warningOrange.withOpacity(0.7)];
+  } else if (glucose > 180) {
+    return [AppTheme.errorRed, AppTheme.errorRed.withOpacity(0.7)];
+  } else {
+    return [AppTheme.successGreen, AppTheme.successGreen.withOpacity(0.7)];
+  }
+}
+
+Widget _buildPlaceholderChart() {
+  return Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          Icons.bar_chart_rounded,
+          size: 48,
+          color: AppTheme.textTertiary.withOpacity(0.3),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Predict glucose to see chart',
+          style: AppTheme.bodySmall.copyWith(
+            color: AppTheme.textTertiary,
+          ),
+        ),
       ],
     ),
   );
@@ -1425,7 +1705,7 @@ Widget _buildEmptyItemsState() {
   );
 }
 
-  Widget _buildFoodItemRow(FoodComponent item, int index) {
+ Widget _buildFoodItemRow(FoodComponent item, int index) {
   return TweenAnimationBuilder<double>(
     tween: Tween(begin: 0.0, end: 1.0),
     duration: Duration(milliseconds: 400 + (index * 100)),
@@ -1491,92 +1771,6 @@ Widget _buildEmptyItemsState() {
                             '${item.carbsG.toStringAsFixed(1)}g carbs • ${_calculateCalories(item.carbsG).toStringAsFixed(0)} cal',
                             style: AppTheme.bodySmall.copyWith(
                               color: AppTheme.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    
-                    // Serving controls
-                    Container(
-                      decoration: BoxDecoration(
-                        color: AppTheme.surface,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: AppTheme.borderLight,
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Decrease serving button
-                          Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              onTap: () => _adjustServing(index, -1.0),
-                              borderRadius: const BorderRadius.horizontal(
-                                left: Radius.circular(8),
-                              ),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                child: Icon(
-                                  Icons.remove_rounded,
-                                  size: 16,
-                                  color: AppTheme.errorRed,
-                                ),
-                              ),
-                            ),
-                          ),
-                          
-                          // Serving display
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              border: Border.symmetric(
-                                vertical: BorderSide(
-                                  color: AppTheme.borderLight,
-                                  width: 1,
-                                ),
-                              ),
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  item.quantity.toStringAsFixed(1),
-                                  style: AppTheme.bodyMedium.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                    color: AppTheme.textPrimary,
-                                  ),
-                                ),
-                                Text(
-                                  item.unit,
-                                  style: AppTheme.bodySmall.copyWith(
-                                    color: AppTheme.textSecondary,
-                                    fontSize: 10,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          
-                          // Increase serving button
-                          Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              onTap: () => _adjustServing(index, 1.0),
-                              borderRadius: const BorderRadius.horizontal(
-                                right: Radius.circular(8),
-                              ),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                child: Icon(
-                                  Icons.add_rounded,
-                                  size: 16,
-                                  color: AppTheme.successGreen,
-                                ),
-                              ),
                             ),
                           ),
                         ],
@@ -1745,8 +1939,9 @@ Widget _buildEmptyItemsState() {
   }
 
  Widget _buildInsulinDoseSection() {
+  double actualCurrentGlucose = _currentGlucose ?? currentGlucose;
   double carbDose = carbs / carbRatio;
-  double correctionDose = (currentGlucose - targetGlucose) / isf;
+  double correctionDose = (actualCurrentGlucose - targetGlucose) / isf;
   double totalDose = carbDose + correctionDose;
 
   return _AnalysisCard(
@@ -1763,24 +1958,38 @@ Widget _buildEmptyItemsState() {
                 color: AppTheme.primaryBlue,
               ),
             ),
-            if (_predictedGlucose != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _getRiskColor(_predictionRiskLevel).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: _getRiskColor(_predictionRiskLevel).withOpacity(0.3),
+            // FIXED: Use Column instead of multiple containers side by side
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (_currentGlucose != null)
+                  Text(
+                    'Current: ${_currentGlucose!.toStringAsFixed(0)} mg/dL',
+                    style: AppTheme.bodySmall.copyWith(
+                      color: AppTheme.textSecondary,
+                    ),
                   ),
-                ),
-                child: Text(
-                  '${_predictedGlucose!.toStringAsFixed(0)} mg/dL',
-                  style: AppTheme.bodySmall.copyWith(
-                    color: _getRiskColor(_predictionRiskLevel),
-                    fontWeight: FontWeight.w600,
+                if (_predictedGlucose != null && _predictionRiskLevel != null)
+                  Container(
+                    margin: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _getRiskColor(_predictionRiskLevel).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _getRiskColor(_predictionRiskLevel).withOpacity(0.3),
+                      ),
+                    ),
+                    child: Text(
+                      'Pred: ${_predictedGlucose!.toStringAsFixed(0)} mg/dL',
+                      style: AppTheme.bodySmall.copyWith(
+                        color: _getRiskColor(_predictionRiskLevel),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                ),
-              ),
+              ],
+            ),
           ],
         ),
         const SizedBox(height: 12),
@@ -1886,7 +2095,6 @@ Widget _buildEmptyItemsState() {
         ),
         const SizedBox(height: 12),
         
-        // Show prediction details if available
         if (_predictionResult != null) ...[
           _buildPredictionDetails(),
           const SizedBox(height: 12),
@@ -1917,6 +2125,15 @@ Widget _buildEmptyItemsState() {
 }
 
 Widget _buildPredictionDetails() {
+  final withInsulinPrediction = _predictionResult?['with_insulin']?['prediction'];
+  
+  if (withInsulinPrediction == null) return const SizedBox.shrink();
+  
+  final glucose = withInsulinPrediction['glucose_mg_dl']?.toDouble();
+  final riskLevel = withInsulinPrediction['risk_assessment']?['level'];
+  final timeline = withInsulinPrediction['timeline'] ?? [];
+  final insulinDose = _predictionResult?['with_insulin']?['insulin_dose']?.toDouble();
+
   return Container(
     padding: const EdgeInsets.all(12),
     decoration: BoxDecoration(
@@ -1932,43 +2149,102 @@ Widget _buildPredictionDetails() {
         Row(
           children: [
             Icon(
-              _predictionRiskLevel == 'normal' 
+              riskLevel == 'normal' 
                 ? Icons.check_circle_outline
                 : Icons.warning_amber_outlined,
               size: 16,
-              color: _getRiskColor(_predictionRiskLevel),
+              color: _getRiskColor(riskLevel),
             ),
             const SizedBox(width: 8),
             Text(
               '30-min Prediction',
               style: AppTheme.bodyMedium.copyWith(
                 fontWeight: FontWeight.w600,
-                color: _getRiskColor(_predictionRiskLevel),
+                color: _getRiskColor(riskLevel),
               ),
             ),
+            if(insulinDose != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                '(${insulinDose.toStringAsFixed(1)}U insulin)',
+                style: AppTheme.bodySmall.copyWith(
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 8),
         Text(
-          _getRiskMessage(_predictionRiskLevel, _predictedGlucose),
+          _getRiskMessage(riskLevel, glucose),
           style: AppTheme.bodySmall.copyWith(
             color: AppTheme.textSecondary,
           ),
         ),
-        if (_predictionTimeline.isNotEmpty) ...[
-          const SizedBox(height: 8),
+        if (_trendLabel() != null) ...[
+          const SizedBox(height: 6),
           Text(
-            'Timeline: ${_predictionTimeline.map((t) => '${t['minutes']}m: ${t['glucose']}').join(' → ')}',
+            'Glucose trend: ${_trendLabel()}',
             style: AppTheme.bodySmall.copyWith(
-              color: AppTheme.textTertiary,
-              fontSize: 10,
+              color: AppTheme.textSecondary,
+              fontWeight: FontWeight.w500,
             ),
+          ),
+        ],
+        if (_insulinSafetyFlagMessage() != null) ...[
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.trending_down,
+                size: 14,
+                color: AppTheme.warningOrange,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _insulinSafetyFlagMessage()!,
+                  style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.warningOrange,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+        if (timeline.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: _buildTimelineChips(timeline),
           ),
         ],
       ],
     ),
   );
 }
+
+List<Widget> _buildTimelineChips(List<dynamic> timeline) {
+  return timeline.map<Widget>((t) => Chip(
+    backgroundColor: _getRiskColorForGlucose((t['glucose'] as num).toDouble()).withOpacity(0.1),
+    label: Text(
+      '${t['minutes']}m: ${t['glucose']}',
+      style: AppTheme.bodySmall.copyWith(
+        color: _getRiskColorForGlucose((t['glucose'] as num).toDouble()),
+        fontSize: 10,
+      ),
+    ),
+  )).toList();
+}
+
+Color _getRiskColorForGlucose(double glucose) {
+  if (glucose < 70) return AppTheme.warningOrange;
+  if (glucose > 180) return AppTheme.errorRed;
+  return AppTheme.successGreen;
+}
+
   Widget _buildDoseCard(String label, double value, Color color) {
     return Container(
       padding: const EdgeInsets.all(14),
@@ -2021,52 +2297,29 @@ Widget _buildPredictionDetails() {
     return _buildLoggingProgress();
   }
 
-  return Column(
+  return Row(
     children: [
-      if (_predictedGlucose == null && !_isPredicting)
-        SharedButton.secondary(
-          text: 'Predict Glucose',
-          onPressed: _getGlucosePrediction,
-          icon: Icons.psychology_outlined,
-        )
-      else if (_isPredicting)
-        Container(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(AppTheme.infoBlue),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Predicting glucose...',
-                style: AppTheme.bodyMedium.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
-              ),
-            ],
-          ),
+      // Discard Meal button
+      Expanded(
+        child: SharedButton.secondary(
+          text: 'Discard',
+          onPressed: () {
+            HapticFeedback.mediumImpact();
+            Navigator.pop(context);
+          },
+          icon: Icons.delete_outline_rounded,
         ),
-      const SizedBox(height: 12),
-      SharedButton(
-        text: 'Log Meal',
-        onPressed: _handleLogMeal,
-        icon: Icons.save_rounded,
       ),
-      const SizedBox(height: 12),
-      SharedButton.secondary(
-        text: 'Discard Meal',
-        onPressed: () {
-          HapticFeedback.mediumImpact();
-          Navigator.pop(context);
-        },
-        icon: Icons.delete_outline_rounded,
+      
+      const SizedBox(width: 12),
+      
+      // Log Meal button (primary action)
+      Expanded(
+        child: SharedButton(
+          text: 'Log Meal',
+          onPressed: _handleLogMeal,
+          icon: Icons.save_rounded,
+        ),
       ),
     ],
   );

@@ -89,7 +89,7 @@ class _NavigationWrapperState extends State<NavigationWrapper>
     const HomeScreen(),
     const GlucoseOverviewScreen(),
     const FoodScanPage(),
-    const MealsScreen(),
+    const InsightsScreen(),
     const ProfileScreen(),
   ];
 
@@ -163,10 +163,6 @@ class _NavigationWrapperState extends State<NavigationWrapper>
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: AppTheme.bottomNavShadow,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(20),
-          topRight: Radius.circular(20),
-        ),
       ),
       child: SafeArea(
         child: Container(
@@ -178,7 +174,7 @@ class _NavigationWrapperState extends State<NavigationWrapper>
               _buildNavItem(Icons.home_rounded, 'Home', 0),
               _buildNavItem(Icons.trending_up_rounded, 'Glucose', 1),
               _buildNavItem(Icons.qr_code_scanner_rounded, 'Scan', 2),
-              _buildNavItem(Icons.restaurant_menu_rounded, 'meals', 3),
+              _buildNavItem(Icons.insights, 'Insights', 3),
               _buildNavItem(Icons.person_rounded, 'Profile', 4),
             ],
           ),

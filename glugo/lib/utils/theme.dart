@@ -21,6 +21,7 @@ class AppTheme {
   static const Color successGreen = Color(0xFF059669);
   static const Color warningOrange = Color(0xFFEA580C);
   static const Color errorRed = Color(0xFFDC2626);
+  static const Color dangerRed = errorRed;
   static const Color infoBlue = Color(0xFF0284C7);
 
   static const Color surface = Color(0xFFFFFFFF);

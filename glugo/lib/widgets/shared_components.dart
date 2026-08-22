@@ -590,7 +590,6 @@ class SharedButton extends StatelessWidget {
   }) : _isSecondary = false; // ✅ default primary
 
   const SharedButton._secondary({
-    super.key,
     required this.text,
     required this.onPressed,
     this.icon,

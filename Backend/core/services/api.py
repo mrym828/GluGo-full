@@ -41,7 +41,6 @@ from ..services.prediction import prediction_service, TORCH_AVAILABLE, LIGHTGBM_
 
 @csrf_exempt
 def csrf_token_view(request):
-    # FIXED: Return correct key name that frontend expects
     return JsonResponse({'csrfToken': 'set'})
 
 @csrf_exempt
@@ -98,8 +97,10 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
                 pass
         
         # Save carbs to instance if found
+        update_fields = []
         if total_carbs is not None:
             instance.total_carbs = total_carbs
+            update_fields.append('total_carbs')
             
             # Also save other nutrition if available
             if 'total_calories' in self.request.data or 'calories_estimate' in self.request.data:
@@ -108,15 +109,20 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
                         self.request.data.get('total_calories') or 
                         self.request.data.get('calories_estimate', 0)
                     )
+                    update_fields.append('total_calories')
                 except (ValueError, TypeError):
                     pass
             
-            instance.save()
+            if update_fields:
+                instance.save(update_fields=update_fields)
         
         # Calculate insulin recommendation
         if total_carbs and total_carbs > 0:
-            carb_ratio = getattr(self.request.user, 'insulin_to_carb_ratio', None) or 0
+            user = self.request.user
+            carb_ratio = getattr(self.request.user, 'insulin_to_carb_ratio', None) 
             correction_factor = getattr(self.request.user, 'correction_factor', None)
+            target_min = getattr(user, 'target_glucose_min', 70)
+            target_max = getattr(user, 'target_glucose_max', 180)
 
             current_glucose = None
             try:
@@ -126,16 +132,26 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
             except Exception:
                 current_glucose = None
 
-            res = calculate_insulin(
-                total_carbs_g=total_carbs,
-                carb_ratio=carb_ratio,
-                current_glucose=current_glucose,
-                correction_factor=correction_factor,
-            )
-            instance.insulin_recommended = res.get('recommended_dose')
-            instance.insulin_rounded = res.get('rounded_dose')
-            instance.save()
-
+            if carb_ratio and carb_ratio > 0:
+                try:
+                    res = calculate_insulin(
+                         total_carbs_g=total_carbs,
+                        carb_ratio=float(carb_ratio),
+                        current_glucose=float(current_glucose) if current_glucose else None,
+                        target_bg=float(target_min) if target_min else 100.0,
+                        target_range=(float(target_min), float(target_max)) if target_min and target_max else None,
+                        correction_factor=float(correction_factor) if correction_factor else None,
+                    )
+                    
+                    instance.insulin_recommended = res.get('recommended_dose')
+                    instance.insulin_rounded = res.get('rounded_dose')
+                    insulin_update_fields = ['insulin_recommended', 'insulin_rounded']
+                    if 'total_carbs' not in update_fields:
+                        insulin_update_fields.append('total_carbs')
+                        
+                    instance.save(update_fields=insulin_update_fields)
+                except Exception as e:
+                    logger.error(f"Insulin calculation failed: {e}")
 
 class GlucoseRecordViewSet(viewsets.ModelViewSet):
     queryset = GlucoseRecord.objects.all()
@@ -344,28 +360,89 @@ class InsulinCalculateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+     try:   
         user = request.user
         data = request.data
         
         total_carbs = data.get('total_carbs_g')
-        current_glucose = data.get('current_glucose')
-        
         if total_carbs is None:
-            return Response({'error': 'total_carbs_g required'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'success': False, 'error': 'total_carbs_g is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+            )
         
-        carb_ratio = getattr(user, 'insulin_to_carb_ratio', None) or 0
+        carb_ratio = getattr(user, 'insulin_to_carb_ratio', None) 
         correction_factor = getattr(user, 'correction_factor', None)
-        target_glucose = getattr(user, 'target_glucose_min', None) or 100
+        target_min = getattr(user, 'target_glucose_min', 70)
+        target_max = getattr(user, 'target_glucose_max', 180)
         
+        if not carb_ratio or carb_ratio <= 0:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Carb ratio not configured. Please update your profile settings.'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        current_glucose = request.data.get('current_glucose')
+        iob = float(request.data.get('iob',0.0))
+        min_dose = float(request.data.get('min_dose', 0.0))
+        max_dose = float(request.data.get('max_dose', 25.0))
+        round_to = float(request.data.get('round_to', 0.5))
+
+        if current_glucose is None:
+                try:
+                    latest = user.glucose_records.order_by('-timestamp').first()
+                    if latest:
+                        current_glucose = latest.glucose_level
+                except Exception:
+                    pass
+
+        predicted_glucose = None
+        try:
+            pred_result = prediction_service.predict_for_user(user, model_type='ensemble')
+            if pred_result.get('success'):
+                predicted_glucose = pred_result['prediction']['glucose_mg_dl']
+        except Exception as e:
+            logger.error(f"Prediction lookup for insulin calc failed: {e}")
+
         result = calculate_insulin(
-            total_carbs_g=float(total_carbs),
-            carb_ratio=carb_ratio,
-            current_glucose=current_glucose,
-            correction_factor=correction_factor,
-            target_glucose=target_glucose
+                total_carbs_g=float(total_carbs),
+                carb_ratio=float(carb_ratio),
+                current_glucose=float(current_glucose) if current_glucose else None,
+                target_bg=float(target_min) if target_min else None,
+                target_range=(float(target_min), float(target_max)) if target_min and target_max else None,
+                correction_factor=float(correction_factor) if correction_factor else None,
+                iob=iob,
+                min_dose=min_dose,
+                max_dose=max_dose,
+                round_to=round_to,
+                predicted_glucose=float(predicted_glucose) if predicted_glucose is not None else None,
         )
         
-        return Response(result, status=status.HTTP_200_OK)
+        return Response({
+                'success': True,
+                'calculation': result,
+                'user_settings': {
+                    'carb_ratio': float(carb_ratio),
+                    'correction_factor': float(correction_factor) if correction_factor else None,
+                    'target_glucose_min': float(target_min) if target_min else None,
+                    'target_glucose_max': float(target_max) if target_max else None,
+                },
+                'timestamp': timezone.now().isoformat()
+            })
+            
+     except ValueError as e:
+        return Response(
+            {'success': False, 'error': f'Invalid input: {str(e)}'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+     except Exception as e:
+        logger.exception('Insulin calculation failed')
+        return Response(
+            {'success': False, 'error': 'Calculation error'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 class LibreOAuthStartView(APIView):
@@ -495,19 +572,22 @@ class LibreSyncNowView(APIView):
             )
 
         # 3) Call LLU /connections
+        from .libre import get_libreview_connection
         try:
-            from .libre import get_libreview_connections
-            payload = get_libreview_connections(base_url, token, account_id)
-        except ImportError:
-            from .libre import _llu_headers_base
-            headers= _llu_headers_base()
-            headers.update({
-                "authorization": f"Bearer {token}",
-                "account-id": hashlib.sha256(account_id.encode()).hexdigest(),
-            })
-            r = requests.get(f"{base_url}/llu/connections", headers=headers, timeout=20)
-            r.raise_for_status()
-            payload = r.json()
+            payload = get_libreview_connection(base_url, token, account_id)
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 401:
+                if conn:
+                    conn.connected = False
+                    conn.save(update_fields=["connected"])
+                return Response(
+                    {
+                        "error": "libre_session_expired",
+                        "message": "Your LibreView session has expired. Please reconnect your account.",
+                    },
+                    status=401,
+                )
+            return Response({"error": f"llu_request_failed: {e}"}, status=502)
         except Exception as e:
             return Response({"error": f"llu_request_failed: {e}"}, status=502)
 
@@ -524,7 +604,11 @@ class LibreSyncNowView(APIView):
 
             value = gm.get("Value")
             trend = gm.get("TrendArrow")
-            ts_str = gm.get("Timestamp") or gm.get("timestamp")
+            # FactoryTimestamp is LibreView's UTC timestamp; "Timestamp" is
+            # local sensor time in the account's region and must not be
+            # treated as UTC (it was previously, causing a several-hour
+            # skew on every synced reading).
+            ts_str = gm.get("FactoryTimestamp") or gm.get("Timestamp") or gm.get("timestamp")
             if value is None or not ts_str:
                 continue
 
@@ -739,23 +823,65 @@ class OpenAIAnalyzeImageView(APIView):
             logger.exception('ai_request unexpected user=%s request_id=%s', user_hash, request_id)
             return Response({'error': 'internal_error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-
 class GlucosePredictionView(APIView):
     """
-    Predict glucose levels 30 minutes ahead.
+    Predict glucose levels 30 minutes ahead based on current trends.
     
-    GET /api/core/glucose/predict/
+    Endpoint: GET /api/core/glucose/predict/
+    
+    What this does:
+    - Fetches your last 4 hours of glucose readings
+    - Runs machine learning models to predict where your glucose will be in 30 minutes
+    - Uses ensemble of CNN-LSTM, LightGBM, and simple baseline models
     
     Query parameters:
-    - model: 'ensemble' (default), 'cnn_lstm', 'lgb', or 'simple'
-    - lookback: minutes of history to use (default: 240 for 4 hours)
+    - model: Which model to use (default: 'ensemble')
+      * 'ensemble': Combines all models (best accuracy)
+      * 'cnn_lstm': Deep learning model only
+      * 'lgb': LightGBM model only  
+      * 'simple': Simple average baseline
+    - lookback: Minutes of history to use (default: 240 = 4 hours)
+    
+    Example request:
+    GET /api/core/glucose/predict/?model=ensemble&lookback=240
+    
+    Example response:
+    {
+        "success": true,
+        "prediction": {
+            "glucose_mg_dl": 165.3,
+            "time_horizon_minutes": 30,
+            "predictions_by_model": {
+                "cnn_lstm": 168.2,
+                "lgb": 163.5,
+                "simple": 164.0
+            },
+            "risk_assessment": {
+                "level": "normal",
+                "current": 160.0,
+                "predicted": 165.3,
+                "change": 5.3
+            },
+            "current_glucose": 160.0,
+            "change": 5.3,
+            "timestamp": "2025-11-23T10:30:00Z"
+        },
+        "metadata": {
+            "model_used": "ensemble",
+            "available_models": ["cnn_lstm", "lgb", "simple"],
+            "data_points_used": 48
+        }
+    }
+    
+    Use cases:
+    - Check if glucose is trending up or down
+    - Get early warning before going out of range
+    - See which direction glucose is heading
     """
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):
         try:
-            from core.services.prediction import prediction_service
-            
             model_type = request.query_params.get('model', 'ensemble')
             lookback = int(request.query_params.get('lookback', 240))
             
@@ -789,49 +915,82 @@ class GlucosePredictionView(APIView):
 
 class MealGlucosePredictionView(APIView):
     """
-    NEW ENDPOINT: Predict glucose levels 30 minutes after a meal.
+    Predict glucose levels 30 minutes after eating a meal.
     
-    POST /api/core/glucose/predict-meal/
+    Endpoint: POST /api/core/glucose/predict-meal/
+    
+    What this does:
+    - Takes meal information (carbs and optional insulin dose)
+    - Predicts how the meal will affect your glucose in 30 minutes
+    - Calculates meal impact using your carb ratio and correction factor
+    - Provides timeline showing glucose at 0, 10, 20, 30 minutes
+    - Gives risk assessment (low/normal/high/extreme)
     
     Request body:
     {
-        "carbs": 45.5,         // Required: carbohydrates in grams
-        "insulin": 4.5,        // Optional: insulin dose in units
-        "model": "ensemble",   // Optional: model type
-        "lookback": 240        // Optional: lookback minutes
+        "carbs": 45.5,         // REQUIRED: carbohydrates in grams
+        "insulin": 4.5,        // Optional: insulin dose in units (default: 0)
+        "model": "ensemble",   // Optional: model type (default: "ensemble")
+        "lookback": 240        // Optional: lookback minutes (default: 240)
     }
     
-    Returns:
+    Example request:
+    POST /api/core/glucose/predict-meal/
+    {
+        "carbs": 60,
+        "insulin": 5,
+        "model": "ensemble"
+    }
+    
+    Example response:
     {
         "success": true,
         "prediction": {
-            "glucose_mg_dl": 165.3,
+            "glucose_mg_dl": 185.3,
             "time_horizon_minutes": 30,
-            "predictions_by_model": {...},
-            "risk_assessment": {...},
-            "current_glucose": 120.0,
+            "predictions_by_model": {
+                "cnn_lstm": 168.2,
+                "lgb": 163.5,
+                "simple": 164.0
+            },
+            "risk_assessment": {
+                "level": "high",
+                "message": "Warning: Predicted glucose (185.3 mg/dL) is above target range."
+            },
+            "current_glucose": 140.0,
             "change": 45.3,
             "timeline": [
-                {"minutes": 0, "glucose": 120.0, "timestamp": "..."},
-                {"minutes": 15, "glucose": 142.7, "timestamp": "..."},
-                {"minutes": 30, "glucose": 165.3, "timestamp": "..."}
+                {"minutes": 0, "glucose": 140.0, "timestamp": "2025-11-23T12:00:00Z"},
+                {"minutes": 10, "glucose": 155.7, "timestamp": "2025-11-23T12:10:00Z"},
+                {"minutes": 20, "glucose": 172.4, "timestamp": "2025-11-23T12:20:00Z"},
+                {"minutes": 30, "glucose": 185.3, "timestamp": "2025-11-23T12:30:00Z"}
             ],
-            "meal_impact": 35.2
+            "meal_impact": 45.3
         },
         "meal_info": {
-            "carbs_g": 45.5,
-            "insulin_units": 4.5
+            "carbs_g": 60,
+            "insulin_units": 5
         },
-        "metadata": {...}
+        "metadata": {
+            "model_used": "ensemble",
+            "available_models": ["cnn_lstm", "lgb", "simple"],
+            "data_points_used": 48
+        }
     }
+    
+    Use cases:
+    - Before eating: "Should I take more insulin with this meal?"
+    - Meal planning: "Will this meal spike my glucose?"
+    - Insulin dosing: "Is my current insulin dose enough?"
+    - Real-time decision making during meals
     """
     permission_classes = [permissions.IsAuthenticated]
     
     def post(self, request):
         try:
-            from core.services.prediction import prediction_service
-            
-            # Validate required fields
+            user = request.user
+
+            # Validate required field: carbs
             carbs = request.data.get('carbs')
             if carbs is None:
                 return Response(
@@ -839,6 +998,7 @@ class MealGlucosePredictionView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
+            # Validate carbs range
             try:
                 carbs = float(carbs)
                 if carbs < 0 or carbs > 500:
@@ -852,33 +1012,125 @@ class MealGlucosePredictionView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Optional fields
-            insulin = request.data.get('insulin', 0)
+            carb_ratio = getattr(user, 'insulin_to_carb_ratio', None)
+            correction_factor = getattr(user, 'correction_factor', None)
+            target_min = getattr(user, 'target_glucose_min', 70)
+            target_max = getattr(user, 'target_glucose_max', 180)
+
+            current_glucose = None
             try:
-                insulin = float(insulin) if insulin else 0
-            except (ValueError, TypeError):
-                insulin = 0
-            
+                latest = user.glucose_records.order_by('-timestamp').first()
+                if latest:
+                    current_glucose = latest.glucose_level
+            except Exception:
+                pass
+
+            # Optional model and lookback parameters
             model_type = request.data.get('model', 'ensemble')
             lookback = int(request.data.get('lookback', 240))
-            
-            valid_models = ['ensemble', 'cnn_lstm', 'lgb', 'simple']
-            if model_type not in valid_models:
-                return Response(
-                    {'success': False, 'error': f'Invalid model. Choose from: {valid_models}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Make prediction
-            result = prediction_service.predict_after_meal(
-                user=request.user,
+
+            # Baseline "no insulin" meal forecast, used later for the
+            # with/without comparison shown to the user.
+            result_without_insulin = prediction_service.predict_after_meal(
+                user=user,
                 meal_carbs=carbs,
-                meal_insulin=insulin,
+                meal_insulin=0,
+                model_type=model_type,
+                lookback_minutes=lookback
+            )
+
+            # Where is glucose headed independent of this meal (ML ensemble
+            # forecast from historical CGM trend)? This is what feeds
+            # calculate_insulin as a hypo-safety check on the correction
+            # dose below. Unlike the carbs-only baseline above (which can
+            # only predict flat/rising, since meal_impact >= 0 for carbs
+            # >= 0), this can genuinely reflect a falling trend.
+            trend_prediction = prediction_service.predict_for_user(
+                user=user, model_type=model_type, lookback_minutes=lookback
+            )
+            predicted_glucose_baseline = None
+            if trend_prediction.get('success'):
+                predicted_glucose_baseline = trend_prediction['prediction']['glucose_mg_dl']
+
+            # Calculate recommended insulin dose using insulin.py
+            insulin_calc = None
+            recommended_insulin = 0
+
+            if carb_ratio and carb_ratio > 0:
+                try:
+                    insulin_calc = calculate_insulin(
+                        total_carbs_g=carbs,
+                        carb_ratio=float(carb_ratio),
+                        current_glucose=float(current_glucose) if current_glucose else None,
+                        target_bg=float(target_min) if target_min else None,
+                        target_range=(float(target_min), float(target_max)) if target_min and target_max else None,
+                        correction_factor=float(correction_factor) if correction_factor else None,
+                        predicted_glucose=predicted_glucose_baseline,
+                    )
+                    recommended_insulin = insulin_calc.get('rounded_dose', 0)
+                except Exception as e:
+                    logger.error(f"Insulin calculation failed: {e}")
+
+            # Use provided insulin or calculated recommendation
+            insulin_to_use = request.data.get('insulin')
+            if insulin_to_use is not None:
+                try:
+                    insulin_to_use = float(insulin_to_use)
+                except (ValueError, TypeError):
+                    insulin_to_use = recommended_insulin
+            else:
+                insulin_to_use = recommended_insulin
+
+            # WITH insulin (recommended dose or user-provided)
+            result_with_insulin = prediction_service.predict_after_meal(
+                user=user,
+                meal_carbs=carbs,
+                meal_insulin=insulin_to_use,
                 model_type=model_type,
                 lookback_minutes=lookback
             )
             
-            return Response(result, status=status.HTTP_200_OK)
+            # Calculate comparison
+            glucose_diff = 0
+            recommendation = ""
+            
+            if result_with_insulin['success'] and result_without_insulin['success']:
+                with_insulin_glucose = result_with_insulin['prediction']['glucose_mg_dl']
+                without_insulin_glucose = result_without_insulin['prediction']['glucose_mg_dl']
+                glucose_diff = without_insulin_glucose - with_insulin_glucose
+                
+                if glucose_diff > 50:
+                    recommendation = f"Taking {insulin_to_use} units will prevent a significant glucose spike (difference: {glucose_diff:.1f} mg/dL)"
+                elif glucose_diff > 20:
+                    recommendation = f"Taking {insulin_to_use} units will help manage glucose levels (difference: {glucose_diff:.1f} mg/dL)"
+                else:
+                    recommendation = f"Minimal difference expected (difference: {glucose_diff:.1f} mg/dL)"
+            
+            return Response({
+                'success': True,
+                'with_insulin': {
+                    'prediction': result_with_insulin.get('prediction'),
+                    'insulin_dose': insulin_to_use,
+                    'metadata': result_with_insulin.get('metadata')
+                },
+                'without_insulin': {
+                    'prediction': result_without_insulin.get('prediction'),
+                    'insulin_dose': 0,
+                    'metadata': result_without_insulin.get('metadata')
+                },
+                'insulin_calculation': insulin_calc if insulin_calc else {
+                    'note': 'Carb ratio not configured. Please update your profile.'
+                },
+                'comparison': {
+                    'glucose_difference_mg_dl': round(glucose_diff, 1),
+                    'recommendation': recommendation
+                },
+                'user_settings': {
+                    'carb_ratio': float(carb_ratio) if carb_ratio else None,
+                    'correction_factor': float(correction_factor) if correction_factor else None,
+                    'target_range': [float(target_min), float(target_max)] if target_min and target_max else None
+                }
+            }, status=status.HTTP_200_OK)
             
         except ValueError as e:
             return Response(
@@ -894,19 +1146,48 @@ class MealGlucosePredictionView(APIView):
 
 
 class PredictionStatusView(APIView):
-    """Check prediction service status."""
+    """
+    Check prediction service status and available models.
+    
+    Endpoint: GET /api/core/glucose/predict/status/
+    
+    What this does:
+    - Shows which ML models are loaded and available
+    - Checks if dependencies (PyTorch, LightGBM) are installed
+    - Indicates service health
+    
+    Example response:
+    {
+        "success": true,
+        "service_loaded": true,
+        "available_models": {
+            "cnn_lstm": true,
+            "lgb": true,
+            "simple": true,
+            "ensemble": true
+        },
+        "dependencies": {
+            "pytorch": true,
+            "lightgbm": true
+        },
+        "message": "Prediction service ready"
+    }
+    
+    Use cases:
+    - Health check endpoint
+    - Debugging: "Why aren't predictions working?"
+    - Frontend: Disable prediction UI if models aren't loaded
+    """
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):
-        from core.services.prediction import prediction_service, TORCH_AVAILABLE, LIGHTGBM_AVAILABLE
-        
         return Response({
             'success': True,
             'service_loaded': prediction_service.loaded,
             'available_models': {
-                'cnn_lstm': TORCH_AVAILABLE and hasattr(prediction_service, 'cnn_lstm_path'),
+                'cnn_lstm': TORCH_AVAILABLE and prediction_service.cnn_lstm_model is not None,
                 'lgb': LIGHTGBM_AVAILABLE and prediction_service.lgb_model is not None,
-                'simple': True,
+                'simple': True,  # Always available (simple average)
                 'ensemble': prediction_service.loaded
             },
             'dependencies': {
@@ -916,3 +1197,110 @@ class PredictionStatusView(APIView):
             'message': 'Prediction service ready' if prediction_service.loaded 
                       else 'No ML models loaded, using baseline only'
         })
+
+
+class QuickGlucosePredictionView(APIView):
+    """
+    Quick glucose prediction based on historical patterns using ML models.
+    
+    Endpoint: GET /api/core/glucose/predict/quick/
+    
+    What this does:
+    - Uses CNN-LSTM/LightGBM models trained on historical glucose data
+    - Predicts glucose 30 minutes ahead based on recent patterns
+    - NO meal/insulin input - pure historical trend prediction
+    
+    Use case:
+    - "What will my glucose be in 30 min if I do nothing?"
+    - Display on home page as a quick trend indicator
+    - Different from meal prediction which is scenario-based
+    
+    Example response:
+    {
+        "success": true,
+        "prediction": {
+            "glucose_mg_dl": 145.2,
+            "time_horizon_minutes": 30,
+            "current_glucose": 137.0,
+            "change": 8.2,
+            "trend": "rising",
+            "predictions_by_model": {
+                "cnn_lstm": 145.5,
+                "lgb": 144.9,
+                "simple": 145.0
+            },
+            "risk_assessment": {
+                "level": "normal",
+                "message": "Predicted glucose within target range"
+            }
+        },
+        "metadata": {
+            "model_used": "ensemble",
+            "data_points_used": 48,
+            "available_models": ["cnn_lstm", "lgb", "simple"]
+        }
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            user = request.user
+            model_type = request.query_params.get('model', 'ensemble')
+            lookback = int(request.query_params.get('lookback', 240))
+            
+            # Get prediction using historical data only
+            result = prediction_service.predict_for_user(
+                user=user,
+                model_type=model_type,
+                lookback_minutes=lookback
+            )
+            
+            if not result['success']:
+                # Not enough glucose history yet is an expected, unexceptional
+                # state (e.g. a new account) — not a server error.
+                return Response(result, status=status.HTTP_200_OK)
+
+            # Add trend indicator
+            current = result['prediction']['current_glucose']
+            predicted = result['prediction']['glucose_mg_dl']
+            change = predicted - current
+            
+            if change > 10:
+                trend = 'rising'
+            elif change < -10:
+                trend = 'falling'
+            else:
+                trend = 'stable'
+            
+            result['prediction']['trend'] = trend
+            
+            # Add risk assessment if not present
+            if 'risk_assessment' not in result['prediction']:
+                risk_level = 'normal'
+                risk_message = "Predicted glucose within target range"
+                
+                if predicted > 180:
+                    risk_level = 'high'
+                    risk_message = f"Warning: Predicted glucose ({predicted:.1f} mg/dL) above target"
+                elif predicted < 70:
+                    risk_level = 'low'
+                    risk_message = f"Warning: Predicted glucose ({predicted:.1f} mg/dL) below target"
+                
+                result['prediction']['risk_assessment'] = {
+                    'level': risk_level,
+                    'message': risk_message
+                }
+            
+            return Response(result, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.exception('Quick glucose prediction failed')
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Prediction service error',
+                    'details': str(e)
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

@@ -6,14 +6,20 @@ correction parameters.
 
 Function contract (calculate_insulin):
 - inputs: total_carbs_g (float), carb_ratio (g per 1 unit), current_glucose (mg/dL, optional),
-  target_bg or target_range, correction_factor (mg/dL per unit), iob (units), min/max dose, rounding
-- output: dict with carb_insulin, correction_insulin, iob, recommended_dose, rounded_dose, safety_flags
+  target_bg or target_range, correction_factor (mg/dL per unit), iob (units), min/max dose, rounding,
+  predicted_glucose (mg/dL, optional 30-min-ahead ML forecast)
+- output: dict with carb_insulin, correction_insulin, iob, recommended_dose, rounded_dose,
+  safety_flags, predicted_glucose, predicted_trend
 
 Edge cases handled:
 - Missing/zero carb_ratio (treated as no carb insulin)
 - Missing correction_factor or current_glucose (no correction insulin)
 - IOB subtraction and min/max clamps
 - Rounding to nearest increment (e.g., 0.5 units)
+- predicted_glucose used only as a safety adjuster on the correction dose: if the
+  forecast is below the target range's low bound, correction insulin is suppressed;
+  if it shows a sharp predicted drop (>=30 mg/dL) it's halved. Carb insulin is
+  never affected by the prediction.
 """
 
 from typing import Optional, Tuple, Dict
@@ -36,6 +42,7 @@ def calculate_insulin(
     min_dose: float = 0.0,
     max_dose: float = 25.0,
     round_to: float = 0.5,
+    predicted_glucose: Optional[float]= None
 ) -> Dict:
     """Return a deterministic insulin recommendation.
 
@@ -51,6 +58,9 @@ def calculate_insulin(
     - iob: insulin on board (units) to subtract from recommendation
     - min_dose/max_dose: clamps for the recommended dose
     - round_to: round recommendation to nearest increment (e.g., 0.5)
+    - predicted_glucose: optional 30-min-ahead ML forecast (mg/dL). Used only to
+      adjust the correction dose downward as a hypoglycemia safety check; never
+      affects carb insulin.
 
     Returns a dictionary with breakdown and recommended/rounded doses.
     """
@@ -106,6 +116,33 @@ def calculate_insulin(
         except Exception:
             correction_insulin = 0.0
 
+    # Predicted-glucose safety adjustment: acts only on correction insulin,
+    # never on carb insulin. A forecast heading into/near hypoglycemia
+    # suppresses the correction dose; a sharp predicted drop reduces it.
+    predicted_trend = None
+    if predicted_glucose is not None and correction_insulin > 0:
+        try:
+            predicted = float(predicted_glucose)
+            low_bound = float(target_range[0]) if target_range else 70.0
+
+            if current_glucose is not None:
+                current = float(current_glucose)
+                if predicted < current:
+                    predicted_trend = 'falling'
+                elif predicted > current:
+                    predicted_trend = 'rising'
+                else:
+                    predicted_trend = 'stable'
+
+            if predicted < low_bound:
+                correction_insulin = 0.0
+                safety_flags.append('predicted_hypo_risk_correction_suppressed')
+            elif current_glucose is not None and (float(current_glucose) - predicted) >= 30:
+                correction_insulin = correction_insulin * 0.5
+                safety_flags.append('predicted_falling_trend_correction_reduced')
+        except Exception:
+            pass
+
     # Combine components and subtract IOB
     raw_recommendation = carb_insulin + correction_insulin - iob
 
@@ -131,5 +168,7 @@ def calculate_insulin(
         'recommended_dose': round(recommended, 4),
         'rounded_dose': round(rounded, 4),
         'safety_flags': safety_flags,
+        'predicted_glucose': predicted_glucose,
+        'predicted_trend': predicted_trend,
     }
 

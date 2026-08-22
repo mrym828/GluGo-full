@@ -13,10 +13,10 @@ load_dotenv(BASE_DIR / '.env')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # Default model names 
-OPENAI_VISION_MODEL = os.environ.get('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision')
+OPENAI_VISION_MODEL = os.environ.get('OPENAI_VISION_MODEL', 'gpt-4o-mini')
 OPENAI_TEXT_MODEL = os.environ.get('OPENAI_TEXT_MODEL', 'gpt-4o-mini')
 # Generic model name for image->json tasks (production entrypoint)
-OPENAI_MODEL = os.environ.get('OPENAI_MODEL', os.getenv('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision'))
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', os.getenv('OPENAI_VISION_MODEL', 'gpt-4o-mini'))
 # Timeout (seconds) for upstream OpenAI calls
 OPENAI_TIMEOUT = int(os.environ.get('OPENAI_TIMEOUT', '20'))
 
@@ -57,7 +57,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-development-key')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', '1') not in ('0', 'False', 'false')
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '10.0.2.2']
+ALLOWED_HOSTS = ['*'] #only for development
 
 
 # Application definition
@@ -191,8 +191,10 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://192.168.0.105:8000",
+    "http://10.255.2.248:8000"
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True  # Only for development
+CORS_ALLOW_ALL_ORIGINS = True  
 
 CORS_ALLOW_CREDENTIALS = True

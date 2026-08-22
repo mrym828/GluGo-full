@@ -34,8 +34,8 @@ class _ProfileSetScreenState extends State<ProfileSetScreen> {
   // Step 3: Goals & Preferences
   final _targetGlucoseMinController = TextEditingController();
   final _targetGlucoseMaxController = TextEditingController();
-  List<String> _selectedGoals = [];
-  List<String> _selectedNotifications = [];
+  final List<String> _selectedGoals = [];
+  final List<String> _selectedNotifications = [];
 
   final List<String> _availableGoals = [
     'Improve HbA1c levels',

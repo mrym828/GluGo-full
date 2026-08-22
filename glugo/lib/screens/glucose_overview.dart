@@ -111,7 +111,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
     
     if (mounted) {
       setState(() {
-        _glucoseReadings = (data as List)
+        _glucoseReadings = (data)
             .map((json) => GlucoseReading.fromJson(json))
             .where((reading) => reading.value > 0) 
             .toList();
@@ -145,7 +145,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
       _showSnackBar('Error loading glucose data', isSuccess: false);
     }
   }
-  List<GlucoseReading> _getFilteredReadings(List<GlucoseReading> allReadings) {
+  List<GlucoseReading> getFilteredReadings(List<GlucoseReading> allReadings) {
   final now = DateTime.now();
   
   switch (_selectedTimeRange) {
@@ -186,7 +186,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
     if (mounted) {
       _showSnackBar(
         recordCount > 0
-          ? 'Synced ${recordCount} new reading${recordCount > 1 ? 's' : ''}!'
+          ? 'Synced $recordCount new reading${recordCount > 1 ? 's' : ''}!'
           : 'All readings are up to date',
         isSuccess: true,
       );
@@ -279,7 +279,7 @@ class _GlucoseOverviewScreenState extends State<GlucoseOverviewScreen>
     
     setState(() => _selectedTimeRange = range);
     HapticFeedback.selectionClick();
-    _loadGlucoseData(); // Reload with new time range filter
+    _loadGlucoseData();
   }
 
   void _onTabChanged(int index) {
@@ -991,7 +991,7 @@ class _GlucoseChart extends StatelessWidget {
     final minute = reading.timestamp.minute;
     final period = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+    return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
   } else if (timeRange == '7d') {
     // Show day names for 7d range
     final now = DateTime.now();
@@ -1206,7 +1206,7 @@ class _ReadingItem extends StatelessWidget {
       final minute = timestamp.minute;
       final period = hour >= 12 ? 'PM' : 'AM';
       final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-      return '${displayHour}:${minute.toString().padLeft(2, '0')} $period';
+      return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
   }
 
   else if (timestamp.isAfter(yesterday) && timestamp.isBefore(today)){
@@ -1279,9 +1279,9 @@ class _DetailedChart extends StatelessWidget {
               Row(
                 children: [
                   _LegendItem('In Range', AppTheme.successGreen),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 5),
                   _LegendItem('High', AppTheme.glucoseHigh),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 5),
                   _LegendItem('Low', AppTheme.glucoseLow),
                 ],
               ),
@@ -1429,7 +1429,7 @@ class _DetailedChart extends StatelessWidget {
     final minute = reading.timestamp.minute;
     final period = hour >= 12 ? 'PM' : 'AM';
     final displayHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '${displayHour}:${minute.toString().padLeft(2, '0')}\n$period';
+    return '$displayHour:${minute.toString().padLeft(2, '0')}\n$period';
   } else if (timeRange == '7d') {
     // Show day names for 7d range
     final now = DateTime.now();

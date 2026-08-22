@@ -6,11 +6,9 @@ import 'package:http_parser/http_parser.dart';
 
 
 class ApiService {
-  static const String baseUrl = 'http://10.0.2.2:8000/glugo/v1'; // Android emulator
-  // static const String baseUrl = 'http://localhost:8000/glugo/v1'; // iOS simulator
-  // static const String baseUrl = 'http://YOUR_COMPUTER_IP:8000/glugo/v1'; // Real device
+  static const String baseUrl = 'http://10.0.2.2:8000/glugo/v1'; // TEMP: Android emulator — 10.0.2.2 is the emulator's alias for the host machine's loopback (127.0.0.1). Was 'http://10.255.2.248:8000/glugo/v1' for a physical Android device on the same LAN.
   
-  String? _csrfToken;
+  String? _csrfToken; 
   String? _accessToken;
   String? _refreshToken;
   Map<String, dynamic>? _cachedProfile;
@@ -91,7 +89,10 @@ class ApiService {
           'username': username,
           'password': password,
         }),
-      );
+      ).timeout(const Duration(seconds: 10), 
+      onTimeout: () {
+        throw Exception('Connection timeout. Check if server is running and phone is on same WiFi.');
+      },);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -309,10 +310,10 @@ class ApiService {
       final queryParams = <String, String>{};
       
       if (startDate != null) {
-        queryParams['start_date'] = startDate.toIso8601String();
+        queryParams['start_date'] = startDate.toUtc().toIso8601String();
       }
       if (endDate != null) {
-        queryParams['end_date'] = endDate.toIso8601String();
+        queryParams['end_date'] = endDate.toUtc().toIso8601String();
       }
       if (limit != null) {
         queryParams['limit'] = limit.toString();
@@ -416,21 +417,21 @@ class ApiService {
     final queryParams = <String, String>{};
     
     if (startDate != null) {
-      queryParams['start_date'] = startDate.toIso8601String();
+      queryParams['start_date'] = startDate.toUtc().toIso8601String();
     }
     if (endDate != null) {
-      queryParams['end_date'] = endDate.toIso8601String();
+      queryParams['end_date'] = endDate.toUtc().toIso8601String();
     }
-    
+
     if (queryParams.isNotEmpty) {
       url += '?${Uri(queryParameters: queryParams).query}';
     }
-    
+
     final response = await _makeAuthenticatedRequest(() => http.get(
       Uri.parse(url),
       headers: _getHeaders(),
     ));
-    
+
     if (response.statusCode == 200) {
       return json.decode(response.body);
     } else {
@@ -466,10 +467,10 @@ class ApiService {
     final queryParams = <String, String>{};
     
     if (startDate != null) {
-      queryParams['start_date'] = startDate.toIso8601String();
+      queryParams['start_date'] = startDate.toUtc().toIso8601String();
     }
     if (endDate != null) {
-      queryParams['end_date'] = endDate.toIso8601String();
+      queryParams['end_date'] = endDate.toUtc().toIso8601String();
     }
     if (mealType != null) {
       queryParams['meal_type'] = mealType;
@@ -687,16 +688,29 @@ class ApiService {
 
   // ==================== INSULIN CALCULATION ====================
 
-  /// Calculate insulin dose
-  Future<dynamic> calculateInsulin(double totalCarbs, {double? currentGlucose}) async {
+
+  Future<dynamic> calculateInsulin(
+    double totalCarbs, {
+    double? currentGlucose,
+    double? iob,
+    double? minDose,
+    double? maxDose,
+    double? roundTo,
+  }) async {
     try {
+      final body = {
+        'total_carbs_g': totalCarbs,
+        if (currentGlucose != null) 'current_glucose': currentGlucose,
+        if (iob != null) 'iob': iob,
+        if (minDose != null) 'min_dose': minDose,
+        if (maxDose != null) 'max_dose': maxDose,
+        if (roundTo != null) 'round_to': roundTo,
+      };
+      
       final response = await _makeAuthenticatedRequest(() => http.post(
         Uri.parse('$baseUrl/insulin/calculate/'),
         headers: _getHeaders(),
-        body: json.encode({
-          'total_carbs_g': totalCarbs,
-          if (currentGlucose != null) 'current_glucose': currentGlucose,
-        }),
+        body: json.encode(body),
       ));
       
       if (response.statusCode == 200) {
@@ -826,9 +840,14 @@ class ApiService {
       rethrow;
     }
   }
+  /// If [insulin] is omitted, the backend recommends its own dose: it runs
+  /// a 30-min glucose forecast first and feeds it into calculate_insulin as
+  /// a hypo-safety check, suppressing or reducing the correction dose when
+  /// glucose is already trending toward a low. Pass [insulin] explicitly
+  /// only to override that recommendation with a specific dose.
   Future<Map<String, dynamic>?> predictGlucoseAfterMeal({
     required double carbs,
-    double insulin = 0,
+    double? insulin,
     String model = 'ensemble',
     int lookback = 240,
   }) async {
@@ -845,7 +864,7 @@ class ApiService {
         },
         body: json.encode({
           'carbs': carbs,
-          'insulin': insulin,
+          if (insulin != null) 'insulin': insulin,
           'model': model,
           'lookback': lookback,
         }),
@@ -932,6 +951,50 @@ class ApiService {
     }
   }
 
+  /// Get quick glucose prediction for home page
+  /// Uses ML models (CNN-LSTM, LightGBM) to predict glucose 30 min ahead
+  /// based on historical patterns (no meal/insulin input)
+  Future<Map<String, dynamic>?> getQuickGlucosePrediction({
+    String model = 'ensemble',
+    int lookback = 240,
+  }) async {
+    try {
+      if (_accessToken == null) {
+        throw Exception('Not authenticated. Please log in.');
+      }
+
+      final response = await http.get(
+        Uri.parse('$baseUrl/glucose/predict/quick/?model=$model&lookback=$lookback'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_accessToken',
+        },
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          throw Exception('Quick prediction timed out');
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data;
+      } else if (response.statusCode == 401) {
+        final refreshed = await refreshAccessToken();
+        if (refreshed) {
+          return await getQuickGlucosePrediction(model: model, lookback: lookback);
+        }
+        throw Exception('Authentication failed');
+      } else {
+        throw Exception('Failed to get quick prediction');
+      }
+    } catch (e) {
+      print('Quick prediction error: $e');
+      return null; // Return null on error for graceful degradation
+    }
+  }
+
+
   /// Check prediction service status
   Future<Map<String, dynamic>?> getPredictionServiceStatus() async {
     try {
@@ -940,7 +1003,7 @@ class ApiService {
       }
 
       final response = await http.get(
-        Uri.parse('$baseUrl/core/glucose/predict-status/'),
+        Uri.parse('$baseUrl/glucose/predict-status/'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $_accessToken',
@@ -1036,4 +1099,3 @@ class ApiService {
     return error.toString();
   }
 }
-

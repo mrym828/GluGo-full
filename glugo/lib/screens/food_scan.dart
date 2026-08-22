@@ -24,10 +24,10 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
   
   // State management
   bool _showScannedResult = false;
-  bool _tipsExpanded = false;
+  final bool _tipsExpanded = false;
   bool _isAnalyzing = false;
-  bool _isUploading = false;
-  int _currentMode = 0; // 0 = camera, 1 = gallery
+  final bool _isUploading = false;
+  final int _currentMode = 0; // 0 = camera, 1 = gallery
   
   // Image and analysis data
   File? _capturedImage;
