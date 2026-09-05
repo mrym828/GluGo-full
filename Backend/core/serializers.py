@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import FoodEntry, GlucoseRecord, NutritionalInfo
+from .models import FoodEntry, GlucoseRecord, InsulinDose, NutritionalInfo
 from .services.insulin import calculate_insulin
 
 class NutritionalInfoSerializer(serializers.ModelSerializer):
@@ -156,5 +156,15 @@ class GlucoseRecordSerializer(serializers.ModelSerializer):
             mood = validated_data['mood']
             if mood:
                 validated_data['mood'] = self.validate_mood(mood)
-        
+
         return super().update(instance, validated_data)
+
+
+class InsulinDoseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InsulinDose
+        fields = [
+            'id', 'user', 'timestamp', 'units', 'recommended_units',
+            'source', 'food_entry', 'notes',
+        ]
+        read_only_fields = ['id', 'user']

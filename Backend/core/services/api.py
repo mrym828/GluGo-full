@@ -1,5 +1,5 @@
 from rest_framework import viewsets, permissions, status
-from ..serializers import FoodEntrySerializer, GlucoseRecordSerializer
+from ..serializers import FoodEntrySerializer, GlucoseRecordSerializer, InsulinDoseSerializer
 from datetime import datetime
 import math
 from rest_framework.views import APIView
@@ -14,7 +14,7 @@ from datetime import timezone as dt_timezone
 from django.utils.dateparse import parse_datetime
 from ..models import (
     LibreConnection, NutritionalInfo,
-    GlucoseRecord, FoodEntry
+    GlucoseRecord, FoodEntry, InsulinDose
 )
 from ..utils import estimate_components_carbs
 from .insulin import calculate_insulin
@@ -70,7 +70,6 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Save the instance first
         instance = serializer.save(user=self.request.user)
-        print("perform_create triggered")
 
         # Extract carbs from request data
         total_carbs = None
@@ -164,7 +163,25 @@ class GlucoseRecordViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-        print("perform_create triggered")
+
+
+class InsulinDoseViewSet(viewsets.ModelViewSet):
+    """
+    Confirmed insulin doses — distinct from FoodEntry.insulin_recommended
+    (an advisory number, never confirmed as taken). Feeds the ML
+    prediction pipeline's IOB feature (see prediction.py's
+    prepare_user_data).
+    """
+    queryset = InsulinDose.objects.all()
+    serializer_class = InsulinDoseSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return InsulinDose.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
 
 class GlucoseStatisticsView(APIView):
     permission_classes = [permissions.IsAuthenticated]

@@ -310,49 +310,99 @@ class StatusBadge extends StatelessWidget {
   }
 }
 
-// Connection Status Widget
+// Connection status a widget can be in. `checking` covers the moment before
+// the real status has come back from the backend, so the badge never has to
+// lie by defaulting to "Connected" while still loading.
+enum LibreConnectionState { checking, connected, disconnected }
+
+// Connection Status Widget — reflects real LibreView connection status when
+// a `state` is supplied by the caller (see SharedAppBar's `connectionState`).
 class ConnectionStatus extends StatelessWidget {
-  final bool isConnected;
+  final LibreConnectionState state;
+  final VoidCallback? onTap;
 
   const ConnectionStatus({
     super.key,
-    this.isConnected = true,
+    this.state = LibreConnectionState.connected,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppTheme.spacingM,
-        vertical: AppTheme.spacingS,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.15),
+    late final Color color;
+    late final String label;
+    switch (state) {
+      case LibreConnectionState.connected:
+        color = AppTheme.successGreen;
+        label = 'Connected';
+        break;
+      case LibreConnectionState.disconnected:
+        color = AppTheme.errorRed;
+        label = 'Not Connected';
+        break;
+      case LibreConnectionState.checking:
+        color = Colors.white;
+        label = 'Checking...';
+        break;
+    }
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
         borderRadius: AppTheme.radiusS,
-        border: Border.all(
-          color: Colors.white.withOpacity(0.2),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTheme.spacingM,
+            vertical: AppTheme.spacingS,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.15),
+            borderRadius: AppTheme.radiusS,
+            border: Border.all(
+              color: Colors.white.withOpacity(0.2),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (state == LibreConnectionState.checking)
+                SizedBox(
+                  width: 8,
+                  height: 8,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    valueColor: AlwaysStoppedAnimation(Colors.white.withOpacity(0.8)),
+                  ),
+                )
+              else
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: AppTheme.labelSmall.copyWith(
+                  color: AppTheme.onPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (onTap != null) ...[
+                const SizedBox(width: 2),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 14,
+                  color: Colors.white.withOpacity(0.7),
+                ),
+              ],
+            ],
+          ),
         ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              color: isConnected ? AppTheme.successGreen : AppTheme.errorRed,
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            isConnected ? 'Connected' : 'Disconnected',
-            style: AppTheme.labelSmall.copyWith(
-              color: AppTheme.onPrimary,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -449,6 +499,11 @@ class SharedAppBar extends StatelessWidget implements PreferredSizeWidget {
   final bool showBackButton;
   final List<Widget>? actions;
   final bool showConnection;
+  // Real LibreView status, when the caller has it. Screens that don't pass
+  // one keep the previous always-"Connected" look rather than claiming a
+  // status they never checked.
+  final LibreConnectionState connectionState;
+  final VoidCallback? onConnectionTap;
 
   const SharedAppBar({
     super.key,
@@ -456,6 +511,8 @@ class SharedAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.showBackButton = false,
     this.actions,
     this.showConnection = true,
+    this.connectionState = LibreConnectionState.connected,
+    this.onConnectionTap,
   });
 
   @override
@@ -494,7 +551,10 @@ class SharedAppBar extends StatelessWidget implements PreferredSizeWidget {
         if (showConnection)
           Container(
             margin: const EdgeInsets.only(right: AppTheme.spacingL),
-            child: const ConnectionStatus(),
+            child: ConnectionStatus(
+              state: connectionState,
+              onTap: onConnectionTap,
+            ),
           ),
       ],
       systemOverlayStyle: SystemUiOverlayStyle.light,

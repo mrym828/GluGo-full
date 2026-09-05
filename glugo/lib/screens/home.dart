@@ -8,6 +8,8 @@ import 'log_reading_page.dart';
 import '../services/api_service.dart';
 import '../utils/glucose_utils.dart';
 
+String _capitalize(String s) => s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,9 +31,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   List<dynamic> _glucoseRecords = [];
   List<dynamic> _foodEntries = [];
   Map<String, dynamic>? _glucoseStats;
-  final bool _showLibreBanner = false;
-  Map<String, dynamic>? _libreStatus;
-  
+  // null while the status hasn't been checked yet, so the app bar badge can
+  // show a neutral "checking" state instead of falsely claiming Connected.
+  bool? _isLibreConnected;
+
   // Quick prediction data
   Map<String, dynamic>? _quickPrediction;
   bool _predictionLoading = false;
@@ -42,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initializeAnimations();
     _animationController.forward();
     _loadData();
+    _checkLibreStatus();
     _setupPeriodicRefresh();
   }
 
@@ -77,38 +81,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     });
   }
 
-  Future<void> _checkLibreConnection() async {
+  /// The Libre status endpoint returns `connected`, not `is_connected` —
+  /// every other call site in the app (home badge, sync action, glucose
+  /// overview, profile) had been reading the wrong key and so always saw
+  /// `null ?? false`, i.e. permanently "disconnected" regardless of the
+  /// real state. Fixed here; see SESSION_SUMMARY.md for the other sites.
+  Future<void> _checkLibreStatus() async {
     try {
       final status = await _apiService.getLibreStatus();
-      final isConnected = status['is_connected'] ?? false;
-      
-      if (!isConnected && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.info_outline, color: Colors.white),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text('Connect LibreView for automatic glucose syncing'),
-                ),
-              ],
-            ),
-            action: SnackBarAction(
-              label: 'Connect',
-              textColor: Colors.white,
-              onPressed: () {
-                Navigator.pushNamed(context, '/device');
-              },
-            ),
-            backgroundColor: AppTheme.primaryBlue,
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 5),
-          ),
-        );
+      final isConnected = status['connected'] ?? false;
+      if (mounted) {
+        setState(() {
+          _isLibreConnected = isConnected;
+        });
       }
     } catch (e) {
       print('Error checking Libre connection: $e');
+      if (mounted) {
+        setState(() {
+          _isLibreConnected = false;
+        });
+      }
     }
   }
 
@@ -142,12 +135,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final profile = await _apiService.getProfile();
       final glucoseRecords = results[0] as List<dynamic>;
 
+      // Same-day only — a record from any time in the last 24h used to also
+      // qualify, which could pull in yesterday's readings (e.g. an 11pm
+      // reading) into what's supposed to be "today's" chart/summary.
       final filteredRecords = glucoseRecords.where((record) {
       try{
       final timestamp = DateTime.parse(record['timestamp']).toLocal();
-      final isToday = timestamp.isAfter(startOfDay) && timestamp.isBefore(endOfDay);
-      final isRecent = DateTime.now().difference(timestamp).inHours<24;
-      return isToday ||isRecent;
+      return timestamp.isAfter(startOfDay) && timestamp.isBefore(endOfDay);
        } catch(e){
           print('Error parsing timestamp for record: $e');
           return false;
@@ -420,7 +414,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           child: RefreshIndicator(
             onRefresh: () async {
               HapticFeedback.mediumImpact();
-              await _loadData();
+              await Future.wait([_loadData(), _checkLibreStatus()]);
             },
             color: AppTheme.primaryBlue,
             child: SingleChildScrollView(
@@ -477,6 +471,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     variability: _glucoseStats?['coefficient_of_variation'] is num
                         ? (_glucoseStats!['coefficient_of_variation'] as num).toInt()
                         : 0,
+                    hasGlucoseData: _glucoseRecords.isNotEmpty,
                   ),
                   const SizedBox(height: AppTheme.spacingXL),
                   _QuickPredictionSection(
@@ -503,10 +498,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   PreferredSizeWidget _buildAppBar() {
-    return const SharedAppBar(
+    return SharedAppBar(
       title: 'GluGo',
       showBackButton: false,
       showConnection: true,
+      connectionState: _isLibreConnected == null
+          ? LibreConnectionState.checking
+          : (_isLibreConnected!
+              ? LibreConnectionState.connected
+              : LibreConnectionState.disconnected),
+      onConnectionTap: () => Navigator.pushNamed(context, '/device').then((_) {
+        _checkLibreStatus();
+      }),
     );
   }
 }
@@ -767,43 +770,27 @@ class _CurrentGlucoseSection extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: ElevatedButton.icon(
+                    child: ActionButton(
+                      label: 'Log Reading',
+                      icon: Icons.add_rounded,
                       onPressed: onLogReading,
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('Log Reading'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primaryBlue,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: AppTheme.radiusM,
-                        ),
-                      ),
+                      isPrimary: true,
                     ),
                   ),
                   const SizedBox(width: AppTheme.spacingM),
                   Expanded(
-                    child: OutlinedButton.icon(
+                    child: ActionButton(
+                      label: 'Log Meal',
+                      icon: Icons.restaurant_rounded,
                       onPressed: onLogMeal,
-                      icon: const Icon(Icons.restaurant, size: 18),
-                      label: const Text('Log Meal'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppTheme.primaryBlue,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: AppTheme.radiusM,
-                        ),
-                        side: BorderSide(color: AppTheme.primaryBlue),
-                      ),
+                      isPrimary: false,
+                      customColor: AppTheme.mealColor,
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: AppTheme.spacingL),
-              SizedBox(
-                height: 120,
-                child: _buildChart(glucoseRecords),
-              ),
+              _buildChart(glucoseRecords),
             ],
           ),
         ),
@@ -812,22 +799,29 @@ class _CurrentGlucoseSection extends StatelessWidget {
   }
 
   Widget _buildChart(List<dynamic> records) {
+    // `records` is already same-day only (filtered upstream in HomeScreen),
+    // so every point here belongs to today.
     final validRecords = records.where((record) {
       final glucose = record['glucose_level']?.toDouble();
       final timestamp = record['timestamp'];
       return glucose != null && glucose > 0 && timestamp != null;
     }).toList();
 
-    if (validRecords.isEmpty) {
-      return Center(
-        child: Text(
-          'No data to display',
-          style: AppTheme.bodyMedium.copyWith(color: AppTheme.textSecondary),
+    if (validRecords.length < 2) {
+      return SizedBox(
+        height: 100,
+        child: Center(
+          child: Text(
+            validRecords.isEmpty
+                ? 'No readings yet today'
+                : 'Log another reading to see today\'s trend',
+            style: AppTheme.bodyMedium.copyWith(color: AppTheme.textSecondary),
+          ),
         ),
       );
     }
 
-    // Prepare chart data from real records
+    // Chart data, oldest to newest so the line reads left-to-right in time.
     final sortedRecords = List.from(validRecords)
       ..sort((a, b) {
         final aTime = DateTime.parse(a['timestamp']);
@@ -835,54 +829,146 @@ class _CurrentGlucoseSection extends StatelessWidget {
         return aTime.compareTo(bTime);
       });
 
-    final spots = <FlSpot>[];
-    for (var i = 0; i < sortedRecords.length && i < 10; i++) {
-      final record = sortedRecords[i];
-      final glucose = record['glucose_level']?.toDouble() ?? 0.0;
-      spots.add(FlSpot(i.toDouble(), glucose));
-    }
+    final spots = <FlSpot>[
+      for (var i = 0; i < sortedRecords.length; i++)
+        FlSpot(i.toDouble(), (sortedRecords[i]['glucose_level'] as num).toDouble()),
+    ];
 
-    return LineChart(
-      LineChartData(
-        gridData: FlGridData(show: false),
-        titlesData: FlTitlesData(show: false),
-        borderData: FlBorderData(show: false),
-        minY: 40,
-        maxY: 250,
-        lineBarsData: [
-          LineChartBarData(
-            isCurved: true,
-            curveSmoothness: 0.3,
-            color: AppTheme.primaryBlue,
-            barWidth: 2,
-            isStrokeCapRound: true,
-            dotData: FlDotData(
-              show: true,
-              getDotPainter: (spot, percent, barData, index) {
-                return FlDotCirclePainter(
-                  radius: 3,
-                  color: AppTheme.primaryBlue,
-                  strokeWidth: 1,
-                  strokeColor: AppTheme.surface,
-                );
-              },
-            ),
-            belowBarData: BarAreaData(
-              show: true,
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  AppTheme.primaryBlue.withOpacity(0.1),
-                  AppTheme.primaryBlue.withOpacity(0.02),
-                ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Today\'s Trend',
+              style: AppTheme.labelMedium.copyWith(
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary,
               ),
             ),
-            spots: spots,
+            Text(
+              '${sortedRecords.length} reading${sortedRecords.length == 1 ? '' : 's'}',
+              style: AppTheme.bodySmall.copyWith(color: AppTheme.textTertiary),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppTheme.spacingS),
+        SizedBox(
+          height: 150,
+          child: LineChart(
+            LineChartData(
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+                horizontalInterval: 50,
+                getDrawingHorizontalLine: (value) {
+                  final isTargetLine = value == 70 || value == 180;
+                  return FlLine(
+                    color: isTargetLine
+                        ? AppTheme.primaryBlue.withOpacity(0.3)
+                        : AppTheme.borderLight,
+                    strokeWidth: isTargetLine ? 1 : 0.5,
+                    dashArray: isTargetLine ? [5, 5] : null,
+                  );
+                },
+              ),
+              titlesData: FlTitlesData(
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 22,
+                    interval: _chartLabelInterval(sortedRecords.length),
+                    getTitlesWidget: (value, meta) {
+                      final index = value.round();
+                      if (index < 0 || index >= sortedRecords.length) {
+                        return const SizedBox.shrink();
+                      }
+                      final time = DateTime.parse(sortedRecords[index]['timestamp']).toLocal();
+                      final hour = time.hour % 12 == 0 ? 12 : time.hour % 12;
+                      final period = time.hour >= 12 ? 'PM' : 'AM';
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          '$hour$period',
+                          style: AppTheme.bodySmall.copyWith(
+                            color: AppTheme.textTertiary,
+                            fontSize: 10,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 30,
+                    interval: 100,
+                    getTitlesWidget: (value, meta) {
+                      return Text(
+                        value.toInt().toString(),
+                        style: AppTheme.bodySmall.copyWith(
+                          color: AppTheme.textTertiary,
+                          fontSize: 10,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              borderData: FlBorderData(show: false),
+              minX: 0,
+              maxX: (spots.length - 1).toDouble(),
+              minY: 40,
+              maxY: 250,
+              lineBarsData: [
+                LineChartBarData(
+                  isCurved: true,
+                  curveSmoothness: 0.3,
+                  color: AppTheme.primaryBlue,
+                  barWidth: 2,
+                  isStrokeCapRound: true,
+                  dotData: FlDotData(
+                    show: spots.length <= 20,
+                    getDotPainter: (spot, percent, barData, index) {
+                      return FlDotCirclePainter(
+                        radius: 3,
+                        color: AppTheme.getGlucoseColor(spot.y),
+                        strokeWidth: 1,
+                        strokeColor: AppTheme.surface,
+                      );
+                    },
+                  ),
+                  belowBarData: BarAreaData(
+                    show: true,
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        AppTheme.primaryBlue.withOpacity(0.1),
+                        AppTheme.primaryBlue.withOpacity(0.02),
+                      ],
+                    ),
+                  ),
+                  spots: spots,
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
+  }
+
+  double _chartLabelInterval(int count) {
+    if (count <= 4) return 1;
+    if (count <= 8) return 2;
+    if (count <= 16) return 4;
+    if (count <= 30) return 6;
+    return 12;
   }
 }
 
@@ -890,11 +976,44 @@ class _CurrentGlucoseSection extends StatelessWidget {
 class _QuickStatsSection extends StatelessWidget {
   final int timeInRange;
   final int variability;
+  final bool hasGlucoseData;
 
   const _QuickStatsSection({
     required this.timeInRange,
     required this.variability,
+    required this.hasGlucoseData,
   });
+
+  void _showInfoSheet(BuildContext context, String title, String description) {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(AppTheme.spacingXL),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: AppTheme.titleMedium.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: AppTheme.spacingS),
+            Text(
+              description,
+              style: AppTheme.bodyMedium.copyWith(color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: AppTheme.spacingL),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -903,6 +1022,7 @@ class _QuickStatsSection extends StatelessWidget {
       children: [
         SectionHeader(
           title: 'Today\'s Summary',
+          subtitle: 'How steady your glucose has been today',
         ),
         const SizedBox(height: AppTheme.spacingS),
         Row(
@@ -912,20 +1032,38 @@ class _QuickStatsSection extends StatelessWidget {
                 title: 'Time in Range',
                 value: timeInRange > 0 ? timeInRange.toString() : '--',
                 unit: timeInRange > 0 ? '%' : '',
-                subtitle: 'Goal: >70%',
+                subtitle: hasGlucoseData ? 'Goal: >70%' : 'No readings yet',
                 icon: Icons.timeline_rounded,
                 accentColor: AppTheme.successGreen,
+                onTap: () => _showInfoSheet(
+                  context,
+                  'Time in Range',
+                  'The share of today\'s glucose readings that fell within the '
+                      'target range of 70–180 mg/dL. Diabetes guidelines '
+                      'generally recommend aiming for more than 70% of '
+                      'readings in range.',
+                ),
               ),
             ),
             const SizedBox(width: AppTheme.spacingM),
             Expanded(
               child: MetricCard(
                 title: 'Variability',
-                value: variability > 0 ? variability.toString() : '--',
-                unit: variability > 0 ? '% CV' : '',
-                subtitle: variability > 0 && variability <= 36 ? 'Low variation' : 'Monitor',
+                value: hasGlucoseData ? variability.toString() : '--',
+                unit: hasGlucoseData ? '% CV' : '',
+                subtitle: !hasGlucoseData
+                    ? 'No readings yet'
+                    : (variability <= 36 ? 'Low variation' : 'High variation'),
                 icon: Icons.analytics_rounded,
                 accentColor: AppTheme.primaryBlue,
+                onTap: () => _showInfoSheet(
+                  context,
+                  'Glucose Variability',
+                  'The coefficient of variation (%CV) measures how much your '
+                      'glucose swings up and down today, not just its average. '
+                      'A lower number means steadier levels — 36% or below is '
+                      'generally considered good control.',
+                ),
               ),
             ),
           ],
@@ -950,7 +1088,7 @@ class _QuickActionsSection extends StatelessWidget {
 
     try {
       final status = await apiService.getLibreStatus();
-      if (!(status['is_connected'] ?? false)){
+      if (!(status['connected'] ?? false)){
         onShowSnackBar('Please connect LibreView first', isSuccess: false);
         Navigator.pushNamed(context, '/device');
         return;
@@ -1153,74 +1291,73 @@ class _RecentActivitySection extends StatelessWidget {
   }
 
   List<Widget> _buildRealActivity() {
-    final activities = <Widget>[];
-    
-    // Add glucose readings
-    for (var i = 0; i < glucoseRecords.length && i < 2; i++) {
-      final record = glucoseRecords[i];
+    // Collect glucose + food entries into one timestamped list so "recent"
+    // actually means recent — previously this showed the first 2 glucose
+    // readings then the first 2 food entries regardless of which set was
+    // more recent, which could bury a just-logged meal under older readings.
+    final entries = <_ActivityEntry>[];
+
+    for (final record in glucoseRecords) {
       final glucose = record['glucose_level']?.toDouble() ?? 0.0;
       final timestampStr = record['timestamp'];
       final source = record['source'] ?? 'manual';
-      
+
       if (timestampStr == null || glucose <= 0) continue;
-      
+
       try {
-        final timestamp = DateTime.parse(timestampStr);
-        final timeStr = '${timestamp.hour}:${timestamp.minute.toString().padLeft(2, '0')} ${timestamp.hour >= 12 ? 'PM' : 'AM'}';
-        
-        activities.add(
-          CustomListItem(
-            icon: source == 'libre' ? Icons.cloud_sync_rounded : Icons.bloodtype_rounded,
-            iconColor: AppTheme.getGlucoseColor(glucose),
-            title: 'Glucose Reading',
-            subtitle: '${glucose.toInt()} mg/dL • $timeStr • ${source == 'libre' ? 'Libre' : 'Manual'}',
-            trailing: StatusBadge(
-              label: AppTheme.getGlucoseStatus(glucose),
-              color: AppTheme.getGlucoseColor(glucose),
-            ),
-            showDivider: i < glucoseRecords.length - 1 && i < 1,
+        final timestamp = DateTime.parse(timestampStr).toLocal();
+        final timeStr = _formatTime(timestamp);
+
+        entries.add(_ActivityEntry(
+          time: timestamp,
+          icon: source == 'libre' ? Icons.cloud_sync_rounded : Icons.bloodtype_rounded,
+          iconColor: AppTheme.getGlucoseColor(glucose),
+          title: 'Glucose Reading',
+          subtitle: '${glucose.toInt()} mg/dL • $timeStr • ${source == 'libre' ? 'Libre' : 'Manual'}',
+          trailing: StatusBadge(
+            label: AppTheme.getGlucoseStatus(glucose),
+            color: AppTheme.getGlucoseColor(glucose),
           ),
-        );
+        ));
       } catch (e) {
         print('Error parsing timestamp: $e');
         continue;
       }
     }
 
-    // Add food entries
-    for (var i = 0; i < foodEntries.length && i < 2; i++) {
-      final entry = foodEntries[i];
+    for (final entry in foodEntries) {
       final foodName = entry['food_name'] ?? 'Meal';
       final timestampStr = entry['timestamp'];
-      
+
       if (timestampStr == null) continue;
-      
+
       try {
-        final timestamp = DateTime.parse(timestampStr);
-        final timeStr = '${timestamp.hour}:${timestamp.minute.toString().padLeft(2, '0')} ${timestamp.hour >= 12 ? 'PM' : 'AM'}';
-        final carbs = entry['nutritional_info']?['carbs']?.toInt() ?? 0;
-        
-        activities.add(
-          CustomListItem(
-            icon: Icons.restaurant_rounded,
-            iconColor: AppTheme.mealColor,
-            title: '${entry['meal_type'] ?? 'Meal'} Logged',
-            subtitle: '$foodName${carbs > 0 ? ' • ${carbs}g carbs' : ''} • $timeStr',
-            trailing: StatusBadge(
-              label: 'Logged',
-              color: AppTheme.successGreen,
-            ),
-            showDivider: i < foodEntries.length - 1 && i < 1,
+        final timestamp = DateTime.parse(timestampStr).toLocal();
+        final timeStr = _formatTime(timestamp);
+        // The API rarely populates the nested `nutritional_info` object (it's
+        // only set when the client sends one at creation time); the carb
+        // total that's actually saved lives on `total_carbs` directly.
+        final carbs = (entry['total_carbs'] ?? entry['nutritional_info']?['carbs'])?.toInt() ?? 0;
+        final mealType = entry['meal_type'] as String?;
+
+        entries.add(_ActivityEntry(
+          time: timestamp,
+          icon: Icons.restaurant_rounded,
+          iconColor: AppTheme.mealColor,
+          title: '${_capitalize(mealType ?? 'Meal')} Logged',
+          subtitle: '$foodName${carbs > 0 ? ' • ${carbs}g carbs' : ''} • $timeStr',
+          trailing: StatusBadge(
+            label: 'Logged',
+            color: AppTheme.successGreen,
           ),
-        );
+        ));
       } catch (e) {
         print('Error parsing food entry timestamp: $e');
         continue;
       }
     }
 
-    // If no activities were added due to invalid data, show empty state
-    if (activities.isEmpty) {
+    if (entries.isEmpty) {
       return [
         Padding(
           padding: const EdgeInsets.all(AppTheme.spacingXL),
@@ -1252,24 +1389,46 @@ class _RecentActivitySection extends StatelessWidget {
       ];
     }
 
-    // Remove divider from last item
-    if (activities.isNotEmpty) {
-      final lastActivity = activities.last;
-      // Reconstruct the last item without divider
-      if (lastActivity is CustomListItem) {
-        activities[activities.length - 1] = CustomListItem(
-          icon: lastActivity.icon,
-          iconColor: lastActivity.iconColor,
-          title: lastActivity.title,
-          subtitle: lastActivity.subtitle,
-          trailing: lastActivity.trailing,
-          showDivider: false,
-        );
-      }
-    }
+    entries.sort((a, b) => b.time.compareTo(a.time));
+    final topEntries = entries.take(4).toList();
 
-    return activities;
+    return [
+      for (var i = 0; i < topEntries.length; i++)
+        CustomListItem(
+          icon: topEntries[i].icon,
+          iconColor: topEntries[i].iconColor,
+          title: topEntries[i].title,
+          subtitle: topEntries[i].subtitle,
+          trailing: topEntries[i].trailing,
+          showDivider: i < topEntries.length - 1,
+        ),
+    ];
   }
+
+  String _formatTime(DateTime timestamp) {
+    final hour = timestamp.hour % 12 == 0 ? 12 : timestamp.hour % 12;
+    final minute = timestamp.minute.toString().padLeft(2, '0');
+    final period = timestamp.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute $period';
+  }
+}
+
+class _ActivityEntry {
+  final DateTime time;
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final Widget trailing;
+
+  _ActivityEntry({
+    required this.time,
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.trailing,
+  });
 }
 
 // Quick Prediction Section - Shows ML-based glucose prediction

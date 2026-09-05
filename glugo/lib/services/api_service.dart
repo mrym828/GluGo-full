@@ -6,7 +6,13 @@ import 'package:http_parser/http_parser.dart';
 
 
 class ApiService {
-  static const String baseUrl = 'http://10.0.2.2:8000/glugo/v1'; // TEMP: Android emulator — 10.0.2.2 is the emulator's alias for the host machine's loopback (127.0.0.1). Was 'http://10.255.2.248:8000/glugo/v1' for a physical Android device on the same LAN.
+  // Overridable at build time: flutter build/run --dart-define=API_BASE_URL=https://api.yourdomain.com/glugo/v1
+  // Defaults to the Android-emulator dev address (10.0.2.2 is the emulator's
+  // alias for the host machine's loopback) when nothing is passed in.
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://10.0.2.2:8000/glugo/v1',
+  );
   
   String? _csrfToken; 
   String? _accessToken;
@@ -365,6 +371,33 @@ class ApiService {
     }
   }
 
+  /// Log a confirmed insulin dose (distinct from the advisory
+  /// insulin_recommended on a food entry — this is what actually feeds the
+  /// ML prediction pipeline's IOB feature). Expected keys in [data]:
+  /// timestamp, units, recommended_units, source, food_entry.
+  Future<dynamic> createInsulinDose(Map<String, dynamic> data) async {
+    try {
+      final response = await _makeAuthenticatedRequest(() => http.post(
+        Uri.parse('$baseUrl/insulin-doses/'),
+        headers: _getHeaders(),
+        body: json.encode(data),
+      ));
+
+      if (response.statusCode == 201) {
+        return json.decode(response.body);
+      } else {
+        print('❌ Full response body: ${response.body}');
+        final error = json.decode(response.body);
+        throw Exception(_formatErrorMessage(error));
+      }
+    } on SocketException {
+      throw Exception('No internet connection. Please check your network.');
+    } catch (e) {
+      print('Error creating insulin dose: $e');
+      rethrow;
+    }
+  }
+
   /// Update glucose record
   Future<dynamic> updateGlucoseRecord(String recordId, Map<String, dynamic> data) async {
     try {
@@ -644,35 +677,33 @@ class ApiService {
   Future<Map<String, dynamic>?> analyzeImageAI(File imageFile) async {
   try {
     await init();
-    
+
     if (!isLoggedIn) {
       throw Exception('User not logged in');
     }
 
     final uri = Uri.parse('$baseUrl/ai/analyze-image/');
-    
-    // Create multipart request
-    final request = http.MultipartRequest('POST', uri);
-    
-    // Add headers
-    request.headers['Authorization'] = 'Bearer $_accessToken';
-    
-    // Add image file
-    final multipartFile = await http.MultipartFile.fromPath(
-    'image', // must match Django field
-    imageFile.path,
-    contentType: MediaType('image', 'jpeg'), // adjust if PNG
-  );
-  request.files.add(multipartFile);
-    
-    print('Sending image analysis request to: $uri');
-    
-    final streamedResponse = await request.send();
-    final response = await http.Response.fromStream(streamedResponse);
-    
+
+    Future<http.Response> sendAnalysisRequest() async {
+      final request = http.MultipartRequest('POST', uri);
+      request.headers['Authorization'] = 'Bearer $_accessToken';
+      final multipartFile = await http.MultipartFile.fromPath(
+        'image', // must match Django field
+        imageFile.path,
+        contentType: MediaType('image', 'jpeg'), // adjust if PNG
+      );
+      request.files.add(multipartFile);
+
+      print('Sending image analysis request to: $uri');
+      final streamedResponse = await request.send();
+      return http.Response.fromStream(streamedResponse);
+    }
+
+    final response = await _makeAuthenticatedRequest(sendAnalysisRequest);
+
     print('Image analysis response status: ${response.statusCode}');
     print('Image analysis response body: ${response.body}');
-    
+
     if (response.statusCode == 200 || response.statusCode == 201) {
       final data = json.decode(response.body);
       return data;

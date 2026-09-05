@@ -58,7 +58,9 @@ class GlucosePredictionService:
             if TORCH_AVAILABLE and os.path.exists(self.cnn_lstm_path):
                 try:
                     from core.services.ml_models import CNNLSTMModel
-                    self.cnn_lstm_model = CNNLSTMModel(input_dim=1)
+                    # Trained on the 22 engineered features in lgb_feature_order.txt
+                    # (see _build_feature_matrix) — not raw glucose alone.
+                    self.cnn_lstm_model = CNNLSTMModel(input_dim=22)
                     self.cnn_lstm_model.load_state_dict(torch.load(self.cnn_lstm_path, map_location='cpu'))
                     self.cnn_lstm_model.eval()
                     logger.info("CNN-LSTM model loaded successfully")
@@ -249,31 +251,60 @@ class GlucosePredictionService:
             
             logger.info(f"Using {len(valid_records)} valid glucose records")
 
+            # Attribute each logged meal's carbs, and each confirmed insulin
+            # dose, to its single nearest 5-min slot (matching the training
+            # data's convention — see Backend/model/37.csv etc., where both
+            # are one-row spikes at the event time, not smeared across
+            # surrounding rows).
+            num_slots = int((end_time - start_time).total_seconds() // 300) + 1
+            carbs_by_slot = {}
+            food_entries = user.food_entries.filter(
+                timestamp__range=[start_time, end_time],
+                total_carbs__isnull=False,
+            )
+            for entry in food_entries:
+                slot_index = round((entry.timestamp - start_time).total_seconds() / 300)
+                slot_index = max(0, min(num_slots - 1, slot_index))
+                carbs_by_slot[slot_index] = carbs_by_slot.get(slot_index, 0) + entry.total_carbs
+
+            insulin_by_slot = {}
+            insulin_doses = user.insulin_doses.filter(
+                timestamp__range=[start_time, end_time],
+                units__isnull=False,
+            )
+            for dose in insulin_doses:
+                slot_index = round((dose.timestamp - start_time).total_seconds() / 300)
+                slot_index = max(0, min(num_slots - 1, slot_index))
+                insulin_by_slot[slot_index] = insulin_by_slot.get(slot_index, 0) + dose.units
+
             data = []
             current_time = start_time
-            
+            slot_index = 0
+
             while current_time <= end_time:
                 # Find closest glucose reading
                 closest_glucose = None
                 min_diff = float('inf')
-                
+
                 for record in valid_records:
                     time_diff = abs((record.timestamp - current_time).total_seconds())
                     if time_diff <= 600 and time_diff < min_diff:  # 5 min window, closest match
                         closest_glucose = record.glucose_level
                         min_diff = time_diff
-                
+
                 if closest_glucose is None and data:
                 # Use last known value if available
                     closest_glucose = data[-1]['glucose']
-                
+
                 data.append({
                     'timestamp': current_time,
                     'glucose': closest_glucose,
-                    'carbs': 0  # Default, can be updated if food data available
+                    'carbs': carbs_by_slot.get(slot_index, 0),
+                    'insulin': insulin_by_slot.get(slot_index, 0),
                 })
-                
+
                 current_time += timedelta(minutes=5)
+                slot_index += 1
 
                 while data and data[0]['glucose'] is None:
                     data.pop(0)
@@ -284,7 +315,87 @@ class GlucosePredictionService:
         except Exception as e:
             logger.error(f"Error preparing user data: {e}")
             raise
-    
+
+    def _build_feature_matrix(self, user, lookback_minutes=240):
+        """
+        Fetch a buffered window of history and turn it into the 22-column
+        engineered feature matrix the trained models expect, mirroring
+        Backend/model/feature_utils.py's create_features_from_csv.
+
+        Buffers past lookback_minutes so lag/rolling windows have enough
+        prior history that the rows you actually care about don't end up
+        NaN once _finalize_feature_matrix drops the warm-up rows.
+
+        Returns a DataFrame with columns in self.feature_order, and a boolean
+        'valid' mask marking rows still usable after dropping NaN-producing
+        warm-up rows (from lag/rolling windows needing prior history).
+        """
+        BUFFER_SLOTS = 12  # matches the largest lag/rolling window (glucose_lag12, glucose_rollstd12)
+        buffered_lookback = lookback_minutes + (BUFFER_SLOTS * 5)
+
+        raw_data = self.prepare_user_data(user, lookback_minutes=buffered_lookback)
+
+        df = pd.DataFrame(raw_data)
+        df['glucose'] = df['glucose'].ffill()
+        df['insulin'] = df.get('insulin',0.0)
+        df['carbs'] = df.get('carbs', 0.0)
+
+        #Time featurs
+        df['hour'] = df['timestamp'].apply(lambda t: t.hour)
+        df['minute'] = df['timestamp'].apply(lambda t: t.minute)
+        df['dayofweek'] = df['timestamp'].apply(lambda t: t.weekday())
+        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+
+        # Glucose lag/rolling/diff — same windows as training
+        for lag in [1, 2, 3, 6, 12]:
+            df[f'glucose_lag{lag}'] = df['glucose'].shift(lag)
+        for w in [3, 6, 12]:
+            df[f'glucose_rollmean{w}'] = df['glucose'].rolling(w).mean()
+            df[f'glucose_rollstd{w}'] = df['glucose'].rolling(w).std()
+        df['glucose_diff1'] = df['glucose'].diff(1)
+
+        # IOB/COB decay features (same tau as training)
+        df['IOB'] = self._decay_feature(df['insulin'].values, tau=48)
+        df['COB'] = self._decay_feature(df['carbs'].values, tau=24)
+
+        return df
+
+    def _decay_feature(self, values, tau):
+        """Ported from Backend/model/feature_utils.py's compute_decay_feature."""
+        values = np.nan_to_num(values, nan=0.0)
+        out = np.zeros_like(values, dtype=float)
+        for t in range(1, len(values)):
+            out[t] = values[t] + out[t - 1] * np.exp(-1 / tau)
+        return out
+
+    def _finalize_feature_matrix(self, df, seq_len=48):
+        """Order columns per self.feature_order, drop NaN warm-up rows, take the last seq_len rows."""
+        if not self.feature_order:
+            raise ValueError("feature_order not loaded — check lgb_feature_order.txt")
+
+        df = df.dropna(subset=self.feature_order).reset_index(drop=True)
+        if len(df) < seq_len:
+            raise ValueError(
+                f"Not enough valid rows after feature engineering ({len(df)}), need {seq_len}"
+            )
+
+        return df[self.feature_order].values[-seq_len:]  # shape (seq_len, 22), correctly ordered
+
+    def get_scaled_feature_matrix(self, user, lookback_minutes=240, seq_len=48):
+        """
+        Full Phase 0 pipeline: buffered fetch -> engineered DataFrame ->
+        ordered/trimmed (seq_len, 22) matrix -> scaled with standard_scaler.pkl.
+        This is what Phase 3 (CNN-LSTM) and Phase 4 (LightGBM) will consume.
+        """
+        df = self._build_feature_matrix(user, lookback_minutes=lookback_minutes)
+        matrix = self._finalize_feature_matrix(df, seq_len=seq_len)
+
+        if self.scaler is None:
+            raise ValueError("scaler not loaded — check standard_scaler.pkl")
+
+        return self.scaler.transform(matrix)  # (seq_len, 22), scaled
+
     def predict_for_user(self, user, model_type='ensemble', lookback_minutes=240):
         """Predict glucose 30 minutes ahead for a user"""
         try:
@@ -312,7 +423,7 @@ class GlucosePredictionService:
             
             if model_type in ['cnn_lstm', 'ensemble'] and self.cnn_lstm_model is not None and TORCH_AVAILABLE:
                 try:
-                    cnn_lstm_pred = self._predict_cnn_lstm(user_data)
+                    cnn_lstm_pred = self._predict_cnn_lstm(user, lookback_minutes)
                     if cnn_lstm_pred is not None:
                         predictions['cnn_lstm'] = self._constrain_prediction(cnn_lstm_pred)
                         logger.info(f"CNN-LSTM prediction: {predictions['cnn_lstm']}")
@@ -322,7 +433,7 @@ class GlucosePredictionService:
             # LightGBM prediction if available
             if model_type in ['lgb', 'ensemble'] and self.lgb_model is not None and LIGHTGBM_AVAILABLE:
                 try:
-                    lgb_pred = self._predict_lightgbm(user_data)
+                    lgb_pred = self._predict_lightgbm(user, lookback_minutes)
                     if lgb_pred is not None:
                         predictions['lgb'] = self._constrain_prediction(lgb_pred)
                         logger.info(f"LightGBM prediction: {predictions['lgb']}")
@@ -485,115 +596,50 @@ class GlucosePredictionService:
             }
     
     
-    def _predict_cnn_lstm(self, user_data):
-        """CNN-LSTM model prediction using loaded model"""
-        try:
-            # Prepare sequence of 48 glucose readings (last 4 hours at 5-min intervals)
-            glucose_sequence = []
-            for data_point in user_data[-48:]:
-                if data_point['glucose'] is not None:
-                    glucose_sequence.append(data_point['glucose'])
-                else:
-                    # Fill missing values with interpolation or last known value
-                    if glucose_sequence:
-                        glucose_sequence.append(glucose_sequence[-1])
-                    else:
-                        glucose_sequence.append(120.0)  # Default value
+    def _predict_cnn_lstm(self, user, lookback_minutes=240):
+        """
+        CNN-LSTM model prediction using loaded model and the real 22-feature
+        pipeline (see _build_feature_matrix / get_scaled_feature_matrix).
 
-            # Pad sequence if needed
-            while len(glucose_sequence) < 48:
-                if glucose_sequence:
-                    glucose_sequence.insert(0, glucose_sequence[0])
-                else:
-                    glucose_sequence.append(120.0)
+        Raises on failure rather than silently falling back — the caller
+        (predict_for_user) already catches exceptions per-model and simply
+        omits this model's contribution to the ensemble, which is more
+        honest than disguising a failed prediction as a real one under the
+        'cnn_lstm' key (that used to get the full ensemble weight as if it
+        were a genuine model output).
+        """
+        scaled_matrix = self.get_scaled_feature_matrix(user, lookback_minutes=lookback_minutes)  # (48, 22)
+        x_tensor = torch.FloatTensor(scaled_matrix).unsqueeze(0)  # (1, 48, 22)
 
-            # Take last 48 readings
-            glucose_sequence = glucose_sequence[-48:]
+        with torch.no_grad():
+            prediction = self.cnn_lstm_model(x_tensor)
+            predicted_value = prediction.item()
 
-            # Normalize using scaler if available
-            if self.scaler:
-                glucose_array = np.array(glucose_sequence).reshape(-1, 1)
-                glucose_normalized = self.scaler.transform(glucose_array).flatten()
-            else:
-                # Simple normalization
-                glucose_normalized = (np.array(glucose_sequence) - 120.0) / 50.0
+        # The model was trained to predict raw glucose (mg/dL) directly —
+        # standard_scaler.pkl was fit only on the 22 input features, not the
+        # target, so no inverse-transform is applied here. This matches
+        # Backend/model/CNN_LSTM_Predict.py, which returns model(...).item()
+        # unmodified as the final prediction.
+        return float(predicted_value)
 
-            # Prepare tensor for model
-            x_tensor = torch.FloatTensor(glucose_normalized).unsqueeze(0).unsqueeze(-1)  # (1, 48, 1)
+    def _predict_lightgbm(self, user, lookback_minutes=240):
+        """
+        LightGBM model prediction using the real 22-feature pipeline
+        (Phase 0). Tree-based models don't need scaled inputs the way
+        CNN-LSTM does, so this uses the unscaled matrix from
+        _finalize_feature_matrix directly, and only needs the most recent
+        row (current state) rather than the full 48-step sequence.
 
-            # Make prediction
-            with torch.no_grad():
-                prediction = self.cnn_lstm_model(x_tensor)
-                predicted_value = prediction.item()
+        Raises on failure rather than silently falling back — same
+        reasoning as _predict_cnn_lstm: the caller (predict_for_user)
+        already catches exceptions per-model and omits this model's
+        contribution rather than disguising a failure as a real result.
+        """
+        df = self._build_feature_matrix(user, lookback_minutes=lookback_minutes)
+        matrix = self._finalize_feature_matrix(df, seq_len=1)  # (1, 22), latest row only
 
-            # Denormalize prediction
-            if self.scaler:
-                predicted_glucose = self.scaler.inverse_transform([[predicted_value]])[0][0]
-            else:
-                predicted_glucose = (predicted_value * 50.0) + 120.0
-
-            return float(predicted_glucose)
-
-        except Exception as e:
-            logger.error(f"CNN-LSTM prediction failed: {e}")
-            # Fallback to simple average
-            recent_readings = [d['glucose'] for d in user_data[-10:] if d['glucose'] is not None]
-            return np.mean(recent_readings) if recent_readings else 120.0
-
-    def _predict_lightgbm(self, user_data):
-        """LightGBM model prediction using loaded model"""
-        try:
-            # Extract features from user data
-            glucose_values = [d['glucose'] for d in user_data if d['glucose'] is not None]
-            carb_values = [d['carbs'] for d in user_data if d['carbs'] > 0]
-
-            if not glucose_values:
-                return 120.0
-
-            # Create feature vector based on expected features
-            features = {
-                'glucose_mean': np.mean(glucose_values[-12:]),  # Last hour average
-                'glucose_std': np.std(glucose_values[-12:]) if len(glucose_values) >= 12 else 0,
-                'glucose_min': np.min(glucose_values[-12:]) if len(glucose_values) >= 12 else glucose_values[-1],
-                'glucose_max': np.max(glucose_values[-12:]) if len(glucose_values) >= 12 else glucose_values[-1],
-                'glucose_current': glucose_values[-1],
-                'glucose_prev_5min': glucose_values[-2] if len(glucose_values) >= 2 else glucose_values[-1],
-                'glucose_prev_10min': glucose_values[-3] if len(glucose_values) >= 3 else glucose_values[-1],
-                'glucose_trend': glucose_values[-1] - glucose_values[-6] if len(glucose_values) >= 6 else 0,
-                'carbs_last_30min': sum(carb_values[-6:]) if carb_values else 0,
-                'carbs_last_60min': sum(carb_values[-12:]) if carb_values else 0,
-            }
-
-            # If feature order file is loaded, use it to create feature array
-            if self.feature_order:
-                feature_array = []
-                for feature_name in self.feature_order:
-                    feature_array.append(features.get(feature_name, 0))
-                feature_array = np.array([feature_array])
-            else:
-                # Use features in default order
-                feature_array = np.array([[
-                    features['glucose_current'],
-                    features['glucose_mean'],
-                    features['glucose_std'],
-                    features['glucose_min'],
-                    features['glucose_max'],
-                    features['glucose_prev_5min'],
-                    features['glucose_prev_10min'],
-                    features['glucose_trend'],
-                    features['carbs_last_30min'],
-                    features['carbs_last_60min'],
-                ]])
-
-            # Make prediction
-            prediction = self.lgb_model.predict(feature_array)
-            return float(prediction[0])
-
-        except Exception as e:
-            logger.error(f"LightGBM prediction failed: {e}")
-            # Fallback to simple average
-            recent_readings = [d['glucose'] for d in user_data[-10:] if d['glucose'] is not None]
-            return np.mean(recent_readings) if recent_readings else 120.0
+        prediction = self.lgb_model.predict(matrix)
+        return float(prediction[0])
     
     def _get_risk_message(self, risk_level, glucose):
         messages = {

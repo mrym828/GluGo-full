@@ -2,7 +2,7 @@
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework import routers
-from core.services.api import FoodEntryViewSet, GlucoseRecordViewSet, QuickGlucosePredictionView
+from core.services.api import FoodEntryViewSet, GlucoseRecordViewSet, InsulinDoseViewSet, QuickGlucosePredictionView
 from core.services.api import (
     HealthSyncView, LibreConnectView, LibreWebhookView, InsulinCalculateView,
     LibreOAuthStartView, LibreOAuthCallbackView, LibrePasswordLoginView,
@@ -15,6 +15,7 @@ from core.views import FoodEntryListCreateView, FoodEntryDetailView, debug_predi
 router = routers.DefaultRouter()
 router.register(r'food-entries', FoodEntryViewSet)
 router.register(r'glucose-records', GlucoseRecordViewSet)
+router.register(r'insulin-doses', InsulinDoseViewSet)
 
 urlpatterns = [
    

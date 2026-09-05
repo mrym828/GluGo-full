@@ -23,11 +23,11 @@ class InsulinAPITests(TestCase):
             'correction_factor': 50,
             'iob': 0.0,
         }
-        resp = self.client.post('/api/insulin/calculate/', payload, format='json')
+        resp = self.client.post('/glugo/v1/insulin/calculate/', payload, format='json')
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertIn('rounded_dose', data)
-        self.assertAlmostEqual(data['rounded_dose'], 7.5)
+        self.assertIn('rounded_dose', data['calculation'])
+        self.assertAlmostEqual(data['calculation']['rounded_dose'], 7.5)
 
     def test_food_entry_create_saves_insulin(self):
       
@@ -36,7 +36,7 @@ class InsulinAPITests(TestCase):
             'meal_type': 'lunch',
             'total_carbs_g': 50,
         }
-        resp = self.client.post('/api/food-entries/', payload, format='json')
+        resp = self.client.post('/glugo/v1/food-entries/', payload, format='json')
         self.assertIn(resp.status_code, (200, 201), msg=str(getattr(resp, 'json', lambda: resp.content)()))
         data = resp.json()
         
@@ -67,12 +67,15 @@ class OpenAIServiceUnitTests(SimpleTestCase):
             def __init__(self, content):
                 self.choices = [FakeChoice(content)]
 
-        fake_json = '{"name":"burger","components":[{"name":"bun","carbs_g":30}],"total_carbs_g":30.0}'
+        fake_json = (
+            '{"name":"burger","components":[{"name":"bun","carbs_g":30}],'
+            '"total_carbs_g":30.0,"total_protein_g":10.0,"total_fat_g":8.0}'
+        )
         fake_client = MagicMock()
         fake_client.chat.completions.create.return_value = FakeResp(fake_json)
 
-        with patch('openai.OpenAI', lambda api_key=None: fake_client):
-            from Backend.core.services.openai_service import analyze_image
+        with patch('core.services.openai_service.OpenAI', lambda api_key=None: fake_client):
+            from core.services.openai_service import analyze_image
             out = analyze_image(self._dummy_image_bytes(), user_id=1, request_id='r1')
             self.assertEqual(out['name'], 'burger')
 
@@ -86,7 +89,7 @@ class OpenAIApiEndpointTests(TestCase):
         self.user = User.objects.create_user(username='tester2', password='pass')
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
-        self.url = '/api/ai/analyze-image/'
+        self.url = '/glugo/v1/ai/analyze-image/'
 
     def _make_file(self, content=b'JPEGDATA', content_type='image/jpeg'):
         return SimpleUploadedFile('img.jpg', content, content_type=content_type)
@@ -107,7 +110,7 @@ class OpenAIApiEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_happy_path_calls_service(self):
-        with patch('core.api.analyze_image') as mock_analyze:
+        with patch('core.services.api.analyze_image') as mock_analyze:
             mock_analyze.return_value = {'name': 'x', 'components': [], 'total_carbs_g': 0.0}
             f = self._make_file(b'jpeg')
             resp = self.client.post(self.url, {'image': f}, format='multipart')

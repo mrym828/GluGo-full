@@ -20,5 +20,9 @@ Backend/db.sqlite3
 # User-uploaded content
 Backend/media/
 
+# collectstatic build output
+Backend/staticfiles/
+
 SESSION_SUMMARY.md
+PRODUCTION_READINESS_SUMMARY.md
 note.txt

@@ -1,4 +1,5 @@
 import json
+import logging
 from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -15,6 +16,8 @@ from .services.openai_service import analyze_image
 from .services.insulin import calculate_insulin
 from .services.libre import login_with_password, get_libreview_connection
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_LOW_GLUC = 69
 DEFAULT_HIGH_GLUC = 200
@@ -144,8 +147,8 @@ class FoodEntry(models.Model):
                 self.insulin_rounded = calc.get("rounded_dose")
                 changed = True
 
-        except Exception as e:
-            print(f"Insulin calculation failed: {e}")
+        except Exception:
+            logger.exception("Insulin calculation failed")
         # Set to None if calculation fails
         self.insulin_recommended = None
         self.insulin_rounded = None
@@ -223,6 +226,42 @@ class GlucoseRecord(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['user', 'timestamp', 'glucose_level', 'source'], name='uniq_glucose_row'),
         ]
+
+
+class InsulinDose(models.Model):
+    """
+    A confirmed record of insulin actually taken, distinct from
+    FoodEntry.insulin_recommended (an advisory number tied to meal
+    logging, never confirmed as taken). Feeds the ML prediction pipeline's
+    IOB (insulin-on-board) feature — see prediction.py's prepare_user_data.
+    """
+    SOURCE_CHOICES = [
+        ('meal', 'Meal Dose'),
+        ('correction', 'Correction Only'),
+        ('manual', 'Manual Entry'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='insulin_doses')
+    timestamp = models.DateTimeField()
+    units = models.FloatField()
+    # What calculate_insulin recommended at the time, for comparison/audit —
+    # null if this dose wasn't tied to a recommendation (e.g. manual entry).
+    recommended_units = models.FloatField(blank=True, null=True)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='meal')
+    food_entry = models.ForeignKey(
+        'FoodEntry', on_delete=models.SET_NULL, blank=True, null=True, related_name='insulin_doses'
+    )
+    notes = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"InsulinDose(user={self.user_id}, units={self.units} at {self.timestamp})"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'timestamp']),
+        ]
+
 
 class LibreConnection(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='libre_connection')
@@ -622,8 +661,11 @@ class Images(models.Model):
 
 
 @receiver(post_save, sender=GlucoseRecord)
-def _glucose_record_alert(sender, instance: GlucoseRecord, created, **kwargs):
-    if not created:
+def _glucose_record_alert(sender, instance: GlucoseRecord, created, raw=False, **kwargs):
+    # raw=True means this save came from loaddata/fixture deserialization,
+    # not a real new reading — skip it, or every fixture load / restore
+    # spawns fresh alerts stamped with today's date for years-old data.
+    if not created or raw:
         return
     try:
         Alert.ensure_for_glucose(instance)

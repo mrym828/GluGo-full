@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-glugo}
+      POSTGRES_USER: ${DB_USER:-glugo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-glugo_dev}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - glugo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-glugo} -d ${DB_NAME:-glugo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside the compose network the db is reachable by service name, on
+      # its container-internal port — not the host-mapped values in .env.
+      DB_HOST: db
+      DB_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - media_data:/app/media
+
+volumes:
+  glugo_postgres_data:
+  media_data:

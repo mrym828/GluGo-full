@@ -2,7 +2,7 @@ from django.shortcuts import render
 from django.http import HttpResponse, JsonResponse
 from django.db.models.functions import Lower
 from requests import Response
-from rest_framework.views import APIView 
+from rest_framework.views import APIView
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.permissions import IsAuthenticated
@@ -13,7 +13,10 @@ import base64
 import openai
 from django.conf import settings
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 def aiopen(request):
@@ -25,7 +28,7 @@ def aiopen(request):
             return render(request, "core/openai.html", {"result": result_text})
 
         image_file = request.FILES["meal_image"]
-        print("Uploaded image:", image_file)
+        logger.debug("Uploaded image: %s", image_file)
 
         # Convert image to base64
         image_bytes = image_file.read()
@@ -70,7 +73,7 @@ def aiopen(request):
             raw_text = response.choices[0].message.content
         except Exception:
             raw_text = response['choices'][0]['message']['content']
-        print("Raw model output:", raw_text)
+        logger.debug("Raw model output: %s", raw_text)
 
        
         parsed = None
@@ -117,8 +120,8 @@ def aiopen(request):
                     if have_number:
                         parsed['total_carbs_g'] = round(s, 1)
 
-        except Exception as e:
-            print("JSON parse error:", e)
+        except Exception:
+            logger.exception("JSON parse error")
             parsed = None
         result_text = parsed if parsed is not None else raw_text
         return render(request, "core/openai.html", {"result": result_text})

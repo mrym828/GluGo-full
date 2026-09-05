@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -551,6 +552,27 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
     );
   }
 
+  /// Image.file crashes outright on Flutter web (dart:io File isn't backed
+  /// by a real filesystem there) — falls back to a placeholder rather than
+  /// taking down the whole screen. On native platforms this renders the
+  /// real captured photo exactly as before.
+  Widget _buildCapturedImage(File file, {required BoxFit fit, double? width, double? height}) {
+    if (kIsWeb) {
+      return Container(
+        width: width,
+        height: height,
+        color: AppTheme.primaryBlue.withOpacity(0.05),
+        alignment: Alignment.center,
+        child: Icon(
+          Icons.image_outlined,
+          size: 40,
+          color: AppTheme.primaryBlue.withOpacity(0.4),
+        ),
+      );
+    }
+    return Image.file(file, fit: fit, width: width, height: height);
+  }
+
   Widget _buildCapturedImagePreview(bool isSmallScreen) {
     return Container(
       width: double.infinity,
@@ -564,10 +586,7 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10),
-        child: Image.file(
-          _capturedImage!,
-          fit: BoxFit.cover,
-        ),
+        child: _buildCapturedImage(_capturedImage!, fit: BoxFit.cover),
       ),
     );
   }
@@ -806,10 +825,7 @@ class _FoodScanPageState extends State<FoodScanPage> with TickerProviderStateMix
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(11),
-                child: Image.file(
-                  _capturedImage!,
-                  fit: BoxFit.cover,
-                ),
+                child: _buildCapturedImage(_capturedImage!, fit: BoxFit.cover),
               ),
             ),
           if (_errorMessage != null) ...[
@@ -1372,14 +1388,26 @@ class _GalleryImageItem extends StatelessWidget {
               future: _getImageFile(),
               builder: (context, snapshot) {
                 if (snapshot.hasData && snapshot.data != null) {
+                  // Image.file crashes outright on Flutter web — see the
+                  // matching helper in _FoodScanPageState for why.
                   return ClipRRect(
                     borderRadius: BorderRadius.circular(6),
-                    child: Image.file(
-                      snapshot.data!,
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      height: double.infinity,
-                    ),
+                    child: kIsWeb
+                        ? Container(
+                            color: AppTheme.primaryBlue.withOpacity(0.05),
+                            alignment: Alignment.center,
+                            child: Icon(
+                              Icons.image_outlined,
+                              size: 24,
+                              color: AppTheme.primaryBlue.withOpacity(0.4),
+                            ),
+                          )
+                        : Image.file(
+                            snapshot.data!,
+                            fit: BoxFit.cover,
+                            width: double.infinity,
+                            height: double.infinity,
+                          ),
                   );
                 }
                 return Container(
